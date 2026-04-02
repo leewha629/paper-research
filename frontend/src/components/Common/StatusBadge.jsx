@@ -1,0 +1,14 @@
+import React from 'react'
+
+const STATUS_MAP = {
+  unread: { label: '미읽음', className: 'badge-unread' },
+  reading: { label: '읽는 중', className: 'badge-reading' },
+  reviewed: { label: '검토 완료', className: 'badge-reviewed' },
+}
+
+export default function StatusBadge({ status }) {
+  const info = STATUS_MAP[status] || STATUS_MAP.unread
+  return (
+    <span className={`badge ${info.className}`}>{info.label}</span>
+  )
+}
