@@ -56,8 +56,8 @@ class AIClient:
 
     async def _ollama(self, system: str, user: str) -> Tuple[str, str, str]:
         base_url = self._get_setting("ollama_base_url") or "http://localhost:11434"
-        model = self._get_setting("ollama_model") or "qwen2.5:7b"
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        model = self._get_setting("ollama_model") or "gemma4:12b"
+        async with httpx.AsyncClient(timeout=300.0) as client:
             resp = await client.post(
                 f"{base_url}/api/chat",
                 json={

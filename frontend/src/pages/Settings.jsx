@@ -6,7 +6,7 @@ const DEFAULT_SETTINGS = {
   ai_backend: 'claude',
   claude_api_key: '',
   ollama_base_url: 'http://localhost:11434',
-  ollama_model: 'qwen2.5:7b',
+  ollama_model: 'gemma4:12b',
   semantic_scholar_api_key: '',
   unpaywall_email: '',
 }
@@ -95,7 +95,7 @@ export default function Settings() {
             <h3 style={{ color: 'var(--success)' }}>Ollama</h3>
             <p>로컬 LLM (프라이버시 보장)</p>
             <p style={{ marginTop: 4, fontSize: 11, color: 'var(--text-secondary)' }}>
-              qwen2.5, llama3.2, gemma3 등
+              gemma4, llama3.2, qwen2.5 등
             </p>
           </div>
         </div>
@@ -159,12 +159,12 @@ export default function Settings() {
             <label className="form-label">모델</label>
             <input
               className="form-input"
-              placeholder="qwen2.5:7b"
+              placeholder="gemma4:12b"
               value={settings.ollama_model}
               onChange={(e) => handleChange('ollama_model', e.target.value)}
             />
             <p style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4 }}>
-              추천: qwen2.5:7b, llama3.2:3b, gemma3:4b
+              추천: gemma4:12b, llama3.2:3b, qwen2.5:7b
             </p>
           </div>
         </div>
