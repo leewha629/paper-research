@@ -6,7 +6,7 @@ const DEFAULT_SETTINGS = {
   ai_backend: 'claude',
   claude_api_key: '',
   ollama_base_url: 'http://localhost:11434',
-  ollama_model: 'gemma4:12b',
+  ollama_model: 'gemma4:e4b',
   semantic_scholar_api_key: '',
   unpaywall_email: '',
 }
@@ -159,12 +159,12 @@ export default function Settings() {
             <label className="form-label">모델</label>
             <input
               className="form-input"
-              placeholder="gemma4:12b"
+              placeholder="gemma4:e4b"
               value={settings.ollama_model}
               onChange={(e) => handleChange('ollama_model', e.target.value)}
             />
             <p style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4 }}>
-              추천: gemma4:12b, llama3.2:3b, qwen2.5:7b
+              추천: gemma4:e4b, llama3.2:3b, qwen2.5:7b
             </p>
           </div>
         </div>

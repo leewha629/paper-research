@@ -48,7 +48,7 @@ DEFAULT_SETTINGS = {
     "ai_backend": "claude",
     "claude_api_key": "",
     "ollama_base_url": "http://localhost:11434",
-    "ollama_model": "gemma4:12b",
+    "ollama_model": "gemma4:e4b",
     "semantic_scholar_api_key": "",
     "unpaywall_email": "",
 }
