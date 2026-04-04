@@ -13,6 +13,9 @@ export const searchAPI = {
       body: JSON.stringify(body),
       signal,
     }),
+  getHistory: (limit = 50) => api.get('/search/history', { params: { limit } }),
+  deleteHistory: (id) => api.delete(`/search/history/${id}`),
+  clearHistory: () => api.delete('/search/history'),
 }
 
 export const papersAPI = {

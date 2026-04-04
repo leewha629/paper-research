@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from database import get_db, SessionLocal
-from models import Paper, AppSetting, SearchCache
+from models import Paper, AppSetting, SearchCache, SearchHistory
 from s2_client import S2Client, RateLimitError, NotFoundError
 from ai_client import AIClient
 
@@ -123,27 +123,50 @@ def apply_must_contain_filter(papers: list, terms: list[str]) -> tuple[list, lis
 
 # ─── AI: Query generation + must_contain extraction ──────────────────────────
 
-async def generate_queries_and_terms(keywords: str, db: Session) -> tuple[list[str], list[str]]:
+async def generate_queries_and_terms(keywords: str, db: Session) -> tuple[list[str], list[str], str]:
     """
     쿼리 6~8개 + must_contain_terms 3~6개를 동시에 생성.
-    반환: (queries, must_contain_terms)
+    반환: (queries, must_contain_terms, expanded_terms_json)
     """
     client = AIClient(db)
     system = (
-        "You are a scientific literature search expert specializing in chemistry and catalysis. "
+        "You are a scientific literature search expert specializing in chemistry and catalysis.\n\n"
+        "CRITICAL — Abbreviation & shorthand expansion:\n"
+        "Users often use abbreviations. You MUST first identify what each abbreviation means "
+        "based on the chemistry context, then use FULL chemical names in your queries.\n"
+        "Common examples (not exhaustive):\n"
+        "- CPE → cyclopentene\n"
+        "- CPN / CPONE → cyclopentanone\n"
+        "- CPL → cyclopentanol\n"
+        "- CHE → cyclohexene\n"
+        "- CHN / CHONE → cyclohexanone\n"
+        "- CHL → cyclohexanol\n"
+        "- MeOH → methanol, EtOH → ethanol\n"
+        "- PDH → propane dehydrogenation\n"
+        "- SCR → selective catalytic reduction\n"
+        "- WGS → water-gas shift\n"
+        "- FT → Fischer-Tropsch\n"
+        "- HDS → hydrodesulfurization\n"
+        "- ORR → oxygen reduction reaction\n"
+        "- OER → oxygen evolution reaction\n"
+        "- HER → hydrogen evolution reaction\n"
+        "If unsure, infer from context. Always use both the abbreviation AND full name in queries.\n\n"
         "The user may provide short keywords OR a natural language question. "
-        "Analyze the research intent deeply and produce TWO things:\n"
-        "1. 'queries': 6-8 diverse English search query strings for Semantic Scholar "
-        "(cover core topic, specific reactions/catalysts, synonyms, broader/narrower concepts)\n"
-        "2. 'must_contain_terms': 3-6 key terms (compound names, reaction names) that a truly "
-        "relevant paper MUST mention in its title or abstract. Use lowercase. "
-        "Include common abbreviations and synonyms as separate entries.\n\n"
+        "Analyze the research intent deeply and produce THREE things:\n"
+        "1. 'expanded_terms': A brief string explaining what abbreviations/shorthand you identified "
+        "(e.g., 'CPE = cyclopentene, CPN = cyclopentanone'). If none, use empty string.\n"
+        "2. 'queries': 6-8 diverse English search query strings for Semantic Scholar. "
+        "Use FULL chemical names (not abbreviations) in most queries. "
+        "Cover: exact reaction, catalyst types, alternative synthesis routes, mechanism studies, "
+        "industrial applications, and related review papers.\n"
+        "3. 'must_contain_terms': 3-6 key terms that a truly relevant paper MUST mention. "
+        "Include BOTH abbreviations AND full names as separate entries. Use lowercase.\n\n"
         "Return ONLY valid JSON — no markdown, no explanation:\n"
-        '{"queries": ["...", "..."], "must_contain_terms": ["...", "..."]}'
+        '{"expanded_terms": "...", "queries": ["...", "..."], "must_contain_terms": ["...", "..."]}'
     )
     user = (
         f'User input: "{keywords}"\n\n'
-        "Generate search queries and must-contain terms for this research topic."
+        "First identify any abbreviations, then generate search queries using full chemical names."
     )
 
     try:
@@ -152,12 +175,13 @@ async def generate_queries_and_terms(keywords: str, db: Session) -> tuple[list[s
         data = json.loads(clean)
         queries = [q.strip() for q in data.get("queries", []) if isinstance(q, str) and q.strip()][:8]
         terms = [t.strip().lower() for t in data.get("must_contain_terms", []) if isinstance(t, str) and t.strip()][:6]
+        expanded = data.get("expanded_terms", "")
         if queries:
-            return queries, terms
+            return queries, terms, expanded
     except Exception:
         pass
 
-    return [keywords], []
+    return [keywords], [], ""
 
 
 # ─── Step B: AI batch relevance scoring ──────────────────────────────────────
@@ -291,6 +315,15 @@ async def ai_search_stream(request: AiSearchRequest):
 
             if cached:
                 payload = json.loads(cached.results_json)
+                # 캐시 히트에도 검색 기록 저장
+                db.add(SearchHistory(
+                    keyword=keywords,
+                    expanded_terms=None,
+                    queries_json=cached.queries_json,
+                    result_count=len(payload.get("results", [])),
+                    total_collected=payload.get("filter_stats", {}).get("raw", 0),
+                ))
+                db.commit()
                 yield sse({
                     "phase": "done",
                     "cache_hit": True,
@@ -305,12 +338,13 @@ async def ai_search_stream(request: AiSearchRequest):
 
             # ── 2. AI 쿼리 + must_contain_terms 생성 ─────────────────────────
             yield sse({"phase": "generating", "message": "AI가 검색 전략 수립 중..."})
-            queries, must_contain_terms = await generate_queries_and_terms(keywords, db)
+            queries, must_contain_terms, expanded_terms = await generate_queries_and_terms(keywords, db)
             estimated_sec = round(len(queries) * QUERY_DELAY_SECONDS + 8)
             yield sse({
                 "phase": "queries_ready",
                 "queries": queries,
                 "must_contain_terms": must_contain_terms,
+                "expanded_terms": expanded_terms,
                 "estimated_seconds": estimated_sec,
             })
 
@@ -391,7 +425,17 @@ async def ai_search_stream(request: AiSearchRequest):
                 for q, c in zip(queries, query_counts)
             ]
 
-            # ── 7. 캐시 저장 ──────────────────────────────────────────────────
+            # ── 7. 검색 기록 저장 ─────────────────────────────────────────────
+            db.add(SearchHistory(
+                keyword=keywords,
+                expanded_terms=expanded_terms or None,
+                queries_json=json.dumps(queries, ensure_ascii=False),
+                result_count=len(high_relevance),
+                total_collected=raw_count,
+            ))
+            db.commit()
+
+            # ── 8. 캐시 저장 ──────────────────────────────────────────────────
             cache_payload = {
                 "must_contain_terms": must_contain_terms,
                 "results": high_relevance,
@@ -416,6 +460,7 @@ async def ai_search_stream(request: AiSearchRequest):
                 "cache_hit": False,
                 "queries": queries_with_counts,
                 "must_contain_terms": must_contain_terms,
+                "expanded_terms": expanded_terms,
                 "results": high_relevance,
                 "low_relevance_results": low_relevance,
                 "filter_stats": filter_stats,
@@ -428,6 +473,49 @@ async def ai_search_stream(request: AiSearchRequest):
             db.close()
 
     return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+# ─── Search history ───────────────────────────────────────────────────────────
+
+@router.get("/history")
+async def get_search_history(
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+):
+    records = (
+        db.query(SearchHistory)
+        .order_by(SearchHistory.searched_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "id": r.id,
+            "keyword": r.keyword,
+            "expanded_terms": r.expanded_terms,
+            "result_count": r.result_count,
+            "total_collected": r.total_collected,
+            "searched_at": r.searched_at.isoformat(),
+        }
+        for r in records
+    ]
+
+
+@router.delete("/history/{history_id}")
+async def delete_search_history(history_id: int, db: Session = Depends(get_db)):
+    record = db.query(SearchHistory).filter(SearchHistory.id == history_id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="검색 기록을 찾을 수 없습니다.")
+    db.delete(record)
+    db.commit()
+    return {"ok": True}
+
+
+@router.delete("/history")
+async def clear_search_history(db: Session = Depends(get_db)):
+    db.query(SearchHistory).delete()
+    db.commit()
+    return {"ok": True}
 
 
 # ─── Paper detail ─────────────────────────────────────────────────────────────

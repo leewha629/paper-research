@@ -1,7 +1,24 @@
-import { useState, useRef, useMemo } from 'react'
+import { useState, useRef, useMemo, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import toast from 'react-hot-toast'
 import { searchAPI, papersAPI } from '../api/client.js'
+
+// ─── sessionStorage 상태 유지 ────────────────────────────────────────────────
+
+const STORAGE_KEY = 'paper-research-search-state'
+
+function saveSearchState(state) {
+  try {
+    sessionStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+  } catch { /* quota exceeded 등 무시 */ }
+}
+
+function loadSearchState() {
+  try {
+    const raw = sessionStorage.getItem(STORAGE_KEY)
+    return raw ? JSON.parse(raw) : null
+  } catch { return null }
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -278,25 +295,51 @@ function PaperCard({ paper, savedIds, onSave, dimmed }) {
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 export default function Search() {
-  const [query, setQuery] = useState('')
-  const [phase, setPhase] = useState('idle')
-  const [queries, setQueries] = useState([])
+  const saved = loadSearchState()
+  const [query, setQuery] = useState(saved?.query || '')
+  const [phase, setPhase] = useState(saved?.phase === 'done' ? 'done' : 'idle')
+  const [queries, setQueries] = useState(saved?.queries || [])
   const [currentQueryIdx, setCurrentQueryIdx] = useState(-1)
-  const [mustContainTerms, setMustContainTerms] = useState([])
-  const [results, setResults] = useState([])           // 고관련도
-  const [lowRelevance, setLowRelevance] = useState([]) // 저관련도
-  const [filterStats, setFilterStats] = useState(null)
-  const [cacheHit, setCacheHit] = useState(false)
+  const [mustContainTerms, setMustContainTerms] = useState(saved?.mustContainTerms || [])
+  const [expandedTerms, setExpandedTerms] = useState(saved?.expandedTerms || '')
+  const [results, setResults] = useState(saved?.results || [])
+  const [lowRelevance, setLowRelevance] = useState(saved?.lowRelevance || [])
+  const [filterStats, setFilterStats] = useState(saved?.filterStats || null)
+  const [cacheHit, setCacheHit] = useState(saved?.cacheHit || false)
   const [estimatedSeconds, setEstimatedSeconds] = useState(null)
   const [savedIds, setSavedIds] = useState(new Set())
   const [showLow, setShowLow] = useState(false)
   const abortRef = useRef(null)
+
+  // 검색 기록
+  const [history, setHistory] = useState([])
+  const [showHistory, setShowHistory] = useState(false)
 
   // 클라이언트 필터 (고관련도 결과에만 적용)
   const [minCitations, setMinCitations] = useState(0)
   const [yearFrom, setYearFrom] = useState('')
   const [yearTo, setYearTo] = useState('')
   const [openAccessOnly, setOpenAccessOnly] = useState(false)
+
+  // 검색 완료 시 상태 저장
+  useEffect(() => {
+    if (phase === 'done') {
+      saveSearchState({
+        query, phase, queries, mustContainTerms, expandedTerms,
+        results, lowRelevance, filterStats, cacheHit,
+      })
+    }
+  }, [phase, query, queries, mustContainTerms, expandedTerms, results, lowRelevance, filterStats, cacheHit])
+
+  // 검색 기록 로드
+  const loadHistory = useCallback(async () => {
+    try {
+      const res = await searchAPI.getHistory(50)
+      setHistory(res.data)
+    } catch { /* ignore */ }
+  }, [])
+
+  useEffect(() => { loadHistory() }, [loadHistory])
 
   const filteredResults = useMemo(() => results.filter(p => {
     if (minCitations > 0 && (p.citation_count || 0) < minCitations) return false
@@ -315,6 +358,7 @@ export default function Search() {
         setPhase('searching')
         setQueries(event.queries.map(q => ({ text: q, result_count: null })))
         setMustContainTerms(event.must_contain_terms || [])
+        setExpandedTerms(event.expanded_terms || '')
         setEstimatedSeconds(event.estimated_seconds)
         break
       case 'searching':
@@ -344,6 +388,8 @@ export default function Search() {
         setFilterStats(event.filter_stats || null)
         if (event.queries) setQueries(Array.isArray(event.queries) ? event.queries : [])
         if (event.must_contain_terms) setMustContainTerms(event.must_contain_terms)
+        if (event.expanded_terms) setExpandedTerms(event.expanded_terms)
+        loadHistory()
         break
       case 'warning': toast(event.message, { icon: '⚠️' }); break
       case 'error':
@@ -361,7 +407,7 @@ export default function Search() {
 
     setPhase('checking_cache')
     setQueries([]); setResults([]); setLowRelevance([])
-    setMustContainTerms([]); setFilterStats(null)
+    setMustContainTerms([]); setExpandedTerms(''); setFilterStats(null)
     setCacheHit(false); setCurrentQueryIdx(-1); setEstimatedSeconds(null)
     setShowLow(false)
 
@@ -493,6 +539,19 @@ export default function Search() {
         <PhaseMessage phase={phase} currentQueryIdx={currentQueryIdx} totalQueries={queries.length} filterStats={filterStats} estimatedSeconds={estimatedSeconds} />
       )}
 
+      {/* Expanded terms (약어 인식 결과) */}
+      {expandedTerms && (
+        <div style={{
+          fontSize: 12, color: 'var(--info)', marginBottom: 10,
+          padding: '8px 12px', background: 'rgba(59,130,246,0.08)',
+          border: '1px solid rgba(59,130,246,0.2)', borderRadius: 6,
+          display: 'flex', alignItems: 'center', gap: 8,
+        }}>
+          <span style={{ fontWeight: 600 }}>🔤 약어 인식:</span>
+          <span>{expandedTerms}</span>
+        </div>
+      )}
+
       {/* Query panel */}
       {queries.length > 0 && (
         <QueryPanel queries={queries} currentIndex={currentQueryIdx} mustContainTerms={mustContainTerms} />
@@ -549,14 +608,108 @@ export default function Search() {
         </div>
       )}
 
+      {/* Search history */}
+      {history.length > 0 && (
+        <div style={{ marginTop: 20 }}>
+          <div style={{
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10,
+          }}>
+            <button
+              onClick={() => setShowHistory(h => !h)}
+              style={{
+                background: 'none', border: 'none', cursor: 'pointer',
+                fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)',
+                display: 'flex', alignItems: 'center', gap: 6, padding: 0,
+              }}
+            >
+              <span>검색 기록 ({history.length}건)</span>
+              <span style={{ fontSize: 11 }}>{showHistory ? '▲ 접기' : '▼ 펼치기'}</span>
+            </button>
+            {showHistory && (
+              <button
+                className="btn btn-sm btn-secondary"
+                style={{ fontSize: 11 }}
+                onClick={async () => {
+                  if (!confirm('검색 기록을 전부 삭제할까요?')) return
+                  await searchAPI.clearHistory()
+                  setHistory([])
+                  toast.success('검색 기록 삭제됨')
+                }}
+              >
+                전체 삭제
+              </button>
+            )}
+          </div>
+          {showHistory && (
+            <div style={{
+              background: 'var(--bg-secondary)', border: '1px solid var(--border)',
+              borderRadius: 8, overflow: 'hidden',
+            }}>
+              {history.map((h, i) => {
+                const dt = new Date(h.searched_at + 'Z')
+                const timeStr = dt.toLocaleString('ko-KR', {
+                  year: 'numeric', month: '2-digit', day: '2-digit',
+                  hour: '2-digit', minute: '2-digit', second: '2-digit',
+                })
+                return (
+                  <div key={h.id} style={{
+                    display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px',
+                    borderBottom: i < history.length - 1 ? '1px solid var(--border)' : 'none',
+                    fontSize: 12,
+                  }}>
+                    <span
+                      style={{ flex: 1, cursor: 'pointer', color: 'var(--accent)', fontWeight: 500 }}
+                      onClick={() => { setQuery(h.keyword); }}
+                      title="클릭하여 검색어 입력"
+                    >
+                      {h.keyword}
+                    </span>
+                    {h.expanded_terms && (
+                      <span style={{ fontSize: 11, color: 'var(--info)', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                        title={h.expanded_terms}>
+                        {h.expanded_terms}
+                      </span>
+                    )}
+                    <span style={{
+                      padding: '1px 6px', borderRadius: 10, fontSize: 10,
+                      background: h.result_count > 0 ? 'rgba(16,185,129,0.12)' : 'var(--bg-tertiary)',
+                      color: h.result_count > 0 ? 'var(--success)' : 'var(--text-secondary)',
+                    }}>
+                      {h.result_count}건
+                    </span>
+                    <span style={{ color: 'var(--text-secondary)', fontSize: 11, whiteSpace: 'nowrap' }}>
+                      {timeStr}
+                    </span>
+                    <button
+                      style={{
+                        background: 'none', border: 'none', cursor: 'pointer',
+                        color: 'var(--text-secondary)', fontSize: 14, padding: '0 4px',
+                        lineHeight: 1,
+                      }}
+                      title="삭제"
+                      onClick={async () => {
+                        await searchAPI.deleteHistory(h.id)
+                        setHistory(prev => prev.filter(x => x.id !== h.id))
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Idle */}
-      {phase === 'idle' && (
+      {phase === 'idle' && history.length === 0 && (
         <div className="empty-state">
           <div className="empty-state-icon">🤖</div>
           <p>궁금한 주제를 입력하면 AI가 검색 전략을 수립합니다.</p>
           <p style={{ fontSize: 12, marginTop: 12, color: 'var(--text-secondary)', lineHeight: 1.9 }}>
             <strong style={{ color: 'var(--text-primary)' }}>키워드:</strong> "iron oxide catalyst"<br />
-            <strong style={{ color: 'var(--text-primary)' }}>자연어:</strong> "cyclopentane을 cyclopentanone으로 산화하는 촉매 연구"<br />
+            <strong style={{ color: 'var(--text-primary)' }}>자연어:</strong> "CPE to CPN oxidation catalyst" (약어 자동 인식)<br />
             <strong style={{ color: 'var(--text-primary)' }}>질문:</strong> "VOC 제거에 효과적인 저온 촉매는 무엇인가요?"
           </p>
         </div>

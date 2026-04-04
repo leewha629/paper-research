@@ -84,3 +84,15 @@ class SearchCache(Base):
     queries_json = Column(Text, nullable=False)   # JSON: ["query1", "query2", ...]
     results_json = Column(Text, nullable=False)   # JSON: full results list with query_hit_count
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class SearchHistory(Base):
+    __tablename__ = "search_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    keyword = Column(String, index=True, nullable=False)
+    expanded_terms = Column(Text, nullable=True)     # JSON: AI가 확장한 용어 (약어 → 풀네임)
+    queries_json = Column(Text, nullable=True)       # JSON: 생성된 쿼리 목록
+    result_count = Column(Integer, default=0)        # 고관련도 결과 수
+    total_collected = Column(Integer, default=0)     # S2 수집 총 수
+    searched_at = Column(DateTime, default=datetime.utcnow)
