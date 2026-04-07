@@ -1,5 +1,7 @@
 import os
 import sys
+import asyncio
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -10,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from database import engine, SessionLocal, Base
 from models import Paper, Collection, PaperCollection, AIAnalysisResult, AppSetting
-from routers import search, papers, ai, pdfs, export, settings
+from routers import search, papers, ai, pdfs, export, settings, tags, folders, alerts, dashboard
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PDF_DIR = os.path.join(BASE_DIR, "data", "pdfs")
@@ -21,7 +23,7 @@ app = FastAPI(title="Paper Research API", version="1.0.0")
 # CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:7001"],
+    allow_origins=["http://localhost:5173", "http://localhost:7010"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -34,6 +36,10 @@ app.include_router(ai.router, prefix="/api")
 app.include_router(pdfs.router, prefix="/api")
 app.include_router(export.router, prefix="/api")
 app.include_router(settings.router, prefix="/api")
+app.include_router(tags.router, prefix="/api")
+app.include_router(folders.router, prefix="/api")
+app.include_router(alerts.router, prefix="/api")
+app.include_router(dashboard.router, prefix="/api")
 
 # Mount PDF files
 os.makedirs(PDF_DIR, exist_ok=True)
@@ -51,7 +57,35 @@ DEFAULT_SETTINGS = {
     "ollama_model": "gemma4:e4b",
     "semantic_scholar_api_key": "",
     "unpaywall_email": "",
+    "check_interval": "24",
+    "relevance_threshold": "6",
 }
+
+
+async def preload_ollama_model():
+    """앱 시작 시 Ollama 모델을 RAM/VRAM에 미리 로드 (백엔드가 ollama로 설정된 경우)."""
+    db = SessionLocal()
+    try:
+        backend_setting = db.query(AppSetting).filter(AppSetting.key == "ai_backend").first()
+        if not backend_setting or backend_setting.value != "ollama":
+            return
+        base_url_setting = db.query(AppSetting).filter(AppSetting.key == "ollama_base_url").first()
+        model_setting = db.query(AppSetting).filter(AppSetting.key == "ollama_model").first()
+        base_url = (base_url_setting.value if base_url_setting else "") or "http://localhost:11434"
+        model = (model_setting.value if model_setting else "") or "gemma4:e4b"
+    finally:
+        db.close()
+
+    try:
+        # 빈 prompt + keep_alive=30m 으로 모델만 메모리에 적재 (생성 안 함)
+        async with httpx.AsyncClient(timeout=600.0) as client:
+            await client.post(
+                f"{base_url}/api/generate",
+                json={"model": model, "prompt": "", "keep_alive": "30m"},
+            )
+        print(f"[startup] Ollama 모델 프리로드 완료: {model} (keep_alive=30m)")
+    except Exception as e:
+        print(f"[startup] Ollama 프리로드 실패 (무시): {e}")
 
 
 @app.on_event("startup")
@@ -72,6 +106,9 @@ async def startup():
         db.commit()
     finally:
         db.close()
+
+    # Ollama 모델 프리로드 (블로킹 방지: 백그라운드 태스크로 실행)
+    asyncio.create_task(preload_ollama_model())
 
 
 # SPA fallback: serve index.html for non-API routes

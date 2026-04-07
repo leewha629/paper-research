@@ -13,6 +13,8 @@ SETTING_KEYS = [
     "ollama_model",
     "semantic_scholar_api_key",
     "unpaywall_email",
+    "check_interval",
+    "relevance_threshold",
 ]
 
 SENSITIVE_KEYS = {"claude_api_key", "semantic_scholar_api_key"}

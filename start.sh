@@ -19,5 +19,5 @@ cd frontend && npm run build && cd ..
 
 mkdir -p data/pdfs
 
-echo "Starting server at http://localhost:7001"
-cd backend && uvicorn main:app --host 0.0.0.0 --port 7000 --reload
+echo "Starting server at http://localhost:7010"
+cd backend && uvicorn main:app --host 0.0.0.0 --port 7010 --reload

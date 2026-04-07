@@ -1,0 +1,17 @@
+{
+  "recommendations": [
+    "ms-python.python",
+    "ms-python.vscode-pylance",
+    "ms-python.debugpy",
+    "ms-python.black-formatter",
+    "charliermarsh.ruff",
+    "dbaeumer.vscode-eslint",
+    "esbenp.prettier-vscode",
+    "dsznajder.es7-react-js-snippets",
+    "rangav.vscode-thunder-client",
+    "tamasfe.even-better-toml",
+    "mikestead.dotenv",
+    "qwtel.sqlite-viewer",
+    "yzhang.markdown-all-in-one"
+  ]
+}

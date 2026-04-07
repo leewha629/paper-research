@@ -6,7 +6,7 @@ import json
 from datetime import datetime
 
 from database import get_db
-from models import Paper, Collection, PaperCollection, AIAnalysisResult
+from models import Paper, Collection, PaperCollection, AIAnalysisResult, Tag, PaperTag, Folder, FolderPaper
 from schemas import (
     PaperCreate, PaperUpdate, PaperOut,
     CollectionCreate, CollectionUpdate, CollectionOut,
@@ -25,6 +25,22 @@ def paper_to_dict(paper: Paper, db: Session) -> dict:
         col = db.query(Collection).filter(Collection.id == pc.collection_id).first()
         if col:
             collections.append({"id": col.id, "name": col.name, "color": col.color})
+
+    # Get tags
+    pt_records = db.query(PaperTag).filter(PaperTag.paper_id == paper.id).all()
+    tags = []
+    for pt in pt_records:
+        tag = db.query(Tag).filter(Tag.id == pt.tag_id).first()
+        if tag:
+            tags.append({"id": tag.id, "name": tag.name, "color": tag.color})
+
+    # Get folders
+    fp_records = db.query(FolderPaper).filter(FolderPaper.paper_id == paper.id).all()
+    folders = []
+    for fp in fp_records:
+        folder = db.query(Folder).filter(Folder.id == fp.folder_id).first()
+        if folder:
+            folders.append({"id": folder.id, "name": folder.name})
 
     # Get analyses
     analyses = db.query(AIAnalysisResult).filter(AIAnalysisResult.paper_id == paper.id).all()
@@ -62,7 +78,14 @@ def paper_to_dict(paper: Paper, db: Session) -> dict:
         "status": paper.status,
         "user_notes": paper.user_notes,
         "collections": collections,
+        "tags": tags,
+        "folders": folders,
         "analyses": analyses_list,
+        "discovered_by": paper.discovered_by,
+        "relevance_score": paper.relevance_score,
+        "relevance_reason": paper.relevance_reason,
+        "is_trashed": bool(paper.is_trashed),
+        "trash_reason": paper.trash_reason,
     }
 
 
@@ -99,6 +122,8 @@ async def save_paper(data: PaperCreate, db: Session = Depends(get_db)):
 @router.get("/papers")
 async def list_papers(
     collection_id: Optional[int] = None,
+    tag_id: Optional[int] = None,
+    folder_id: Optional[int] = None,
     status: Optional[str] = None,
     search: Optional[str] = None,
     sort_by: str = Query("saved_at", description="saved_at/year/citation_count"),
@@ -110,6 +135,16 @@ async def list_papers(
     if collection_id is not None:
         query = query.join(PaperCollection, PaperCollection.paper_id == Paper.id).filter(
             PaperCollection.collection_id == collection_id
+        )
+
+    if tag_id is not None:
+        query = query.join(PaperTag, PaperTag.paper_id == Paper.id).filter(
+            PaperTag.tag_id == tag_id
+        )
+
+    if folder_id is not None:
+        query = query.join(FolderPaper, FolderPaper.paper_id == Paper.id).filter(
+            FolderPaper.folder_id == folder_id
         )
 
     if status:
@@ -311,3 +346,46 @@ async def remove_paper_from_collection(id: int, paper_id: int, db: Session = Dep
     db.delete(pc)
     db.commit()
     return {"success": True}
+
+
+# --- Bulk Operations ---
+
+@router.post("/papers/bulk-status")
+async def bulk_update_status(body: dict, db: Session = Depends(get_db)):
+    """여러 논문의 상태를 일괄 변경"""
+    paper_ids = body.get("paper_ids", [])
+    status = body.get("status")
+
+    if not paper_ids:
+        raise HTTPException(status_code=400, detail="paper_ids가 필요합니다.")
+    if not status:
+        raise HTTPException(status_code=400, detail="status가 필요합니다.")
+
+    valid_statuses = ("unread", "reading", "read", "important")
+    if status not in valid_statuses:
+        raise HTTPException(status_code=400, detail=f"status는 {', '.join(valid_statuses)} 중 하나여야 합니다.")
+
+    updated = db.query(Paper).filter(Paper.id.in_(paper_ids)).update(
+        {"status": status}, synchronize_session="fetch"
+    )
+    db.commit()
+    return {"success": True, "updated": updated}
+
+
+@router.post("/papers/bulk-delete")
+async def bulk_delete_papers(body: dict, db: Session = Depends(get_db)):
+    """여러 논문을 일괄 삭제"""
+    paper_ids = body.get("paper_ids", [])
+
+    if not paper_ids:
+        raise HTTPException(status_code=400, detail="paper_ids가 필요합니다.")
+
+    # 관련 데이터 삭제
+    db.query(PaperCollection).filter(PaperCollection.paper_id.in_(paper_ids)).delete(synchronize_session="fetch")
+    db.query(PaperTag).filter(PaperTag.paper_id.in_(paper_ids)).delete(synchronize_session="fetch")
+    db.query(FolderPaper).filter(FolderPaper.paper_id.in_(paper_ids)).delete(synchronize_session="fetch")
+    db.query(AIAnalysisResult).filter(AIAnalysisResult.paper_id.in_(paper_ids)).delete(synchronize_session="fetch")
+
+    deleted = db.query(Paper).filter(Paper.id.in_(paper_ids)).delete(synchronize_session="fetch")
+    db.commit()
+    return {"success": True, "deleted": deleted}

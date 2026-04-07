@@ -1,0 +1,51 @@
+{
+  // Python
+  "python.defaultInterpreterPath": "${workspaceFolder}/venv/bin/python",
+  "python.terminal.activateEnvironment": true,
+  "python.analysis.extraPaths": ["${workspaceFolder}/backend"],
+  "python.analysis.autoImportCompletions": true,
+  "python.analysis.typeCheckingMode": "basic",
+
+  // 포맷터
+  "[python]": {
+    "editor.defaultFormatter": "ms-python.black-formatter",
+    "editor.formatOnSave": true
+  },
+  "[javascript]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "editor.formatOnSave": true
+  },
+  "[javascriptreact]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "editor.formatOnSave": true
+  },
+  "[json]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+
+  // 파일 제외
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/*.pyc": true,
+    "**/.DS_Store": true,
+    "**/venv": true,
+    "**/node_modules": true
+  },
+  "search.exclude": {
+    "**/venv": true,
+    "**/node_modules": true,
+    "**/data/pdfs": true,
+    "**/backend/static/assets": true
+  },
+
+  // 터미널
+  "terminal.integrated.cwd": "${workspaceFolder}",
+
+  // ESLint
+  "eslint.workingDirectories": ["frontend"],
+
+  // 파일 연결
+  "files.associations": {
+    "*.env.example": "dotenv"
+  }
+}

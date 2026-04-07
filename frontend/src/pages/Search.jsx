@@ -20,15 +20,51 @@ function loadSearchState() {
   } catch { return null }
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Constants ───────────────────────────────────────────────────────────────
 
-function formatAuthors(authors) {
+const CATALYSIS_JOURNALS = [
+  'ACS Catalysis',
+  'Journal of Catalysis',
+  'Applied Catalysis B',
+  'Catalysis Today',
+  'Chemical Engineering Journal',
+  'Nature Catalysis',
+  'Angewandte Chemie',
+]
+
+const FIELD_OPTIONS = [
+  'Chemistry',
+  'Materials Science',
+  'Engineering',
+  'Environmental Science',
+  'Physics',
+  'Chemical Engineering',
+]
+
+const SORT_OPTIONS = [
+  { value: 'relevance', label: 'AI 관련도순' },
+  { value: 'citations', label: '인용수순' },
+  { value: 'newest', label: '최신순' },
+  { value: 'oldest', label: '연도순 (오래된순)' },
+]
+
+const PAGE_SIZE = 20
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function parseAuthors(authors) {
   try {
     const list = typeof authors === 'string' ? JSON.parse(authors) : authors
-    if (!list?.length) return '저자 미상'
-    const names = list.slice(0, 3).map(a => a.name || a)
-    return names.join(', ') + (list.length > 3 ? ' et al.' : '')
-  } catch { return '저자 미상' }
+    if (!list?.length) return []
+    return list.map(a => a.name || a)
+  } catch { return [] }
+}
+
+function formatAuthorsShort(authors) {
+  const names = parseAuthors(authors)
+  if (!names.length) return '저자 미상'
+  if (names.length === 1) return names[0]
+  return `${names[0]} et al.`
 }
 
 function scoreColor(score) {
@@ -39,16 +75,40 @@ function scoreColor(score) {
   return { bg: 'rgba(239,68,68,0.1)', text: 'var(--danger)' }
 }
 
-// ─── Phase messages ───────────────────────────────────────────────────────────
+function citationColor(count) {
+  if (count >= 100) return { bg: 'rgba(245,158,11,0.18)', text: '#f59e0b' }
+  if (count >= 50) return { bg: 'rgba(59,130,246,0.15)', text: 'var(--info)' }
+  if (count >= 10) return { bg: 'var(--bg-tertiary)', text: 'var(--text-secondary)' }
+  return { bg: 'var(--bg-tertiary)', text: 'var(--text-secondary)' }
+}
+
+function sortResults(results, sortBy) {
+  const sorted = [...results]
+  switch (sortBy) {
+    case 'citations':
+      return sorted.sort((a, b) => (b.citation_count || 0) - (a.citation_count || 0))
+    case 'newest':
+      return sorted.sort((a, b) => (b.year || 0) - (a.year || 0))
+    case 'oldest':
+      return sorted.sort((a, b) => (a.year || 9999) - (b.year || 9999))
+    case 'relevance':
+    default:
+      return sorted.sort((a, b) => (b.relevance_score ?? -1) - (a.relevance_score ?? -1))
+  }
+}
+
+// ─── Phase messages ──────────────────────────────────────────────────────────
 
 function PhaseMessage({ phase, currentQueryIdx, totalQueries, filterStats, estimatedSeconds }) {
   const msgs = {
     checking_cache: '캐시 확인 중...',
+    translating: '검색어 번역 중...',
+    translated: '번역 완료',
     generating: 'AI가 검색 전략 수립 중...',
     queries_ready: 'Semantic Scholar 검색 준비 중...',
     searching: `쿼리 ${currentQueryIdx + 1} / ${totalQueries} 검색 중`,
     processing: '중복 제거 및 정렬 중...',
-    filtering: `관련 논문 필터링 중...`,
+    filtering: '관련 논문 필터링 중...',
     scoring: `AI 관련도 분석 중... (${filterStats?.after_must_contain ?? ''}건)`,
   }
   return (
@@ -74,11 +134,26 @@ function PhaseMessage({ phase, currentQueryIdx, totalQueries, filterStats, estim
   )
 }
 
-// ─── Query progress panel ─────────────────────────────────────────────────────
+// ─── Editable Query panel ────────────────────────────────────────────────────
 
-function QueryPanel({ queries, currentIndex, mustContainTerms }) {
+function EditableQueryPanel({ queries, currentIndex, mustContainTerms, expandedTerms, onReSearch, isSearching }) {
   const [open, setOpen] = useState(true)
+  const [editMode, setEditMode] = useState(false)
+  const [editedQueries, setEditedQueries] = useState([])
+
+  useEffect(() => {
+    setEditedQueries(queries.map(q => typeof q === 'string' ? q : q.text))
+  }, [queries])
+
   if (!queries.length) return null
+
+  const handleReSearch = () => {
+    const custom = editedQueries.filter(q => q.trim())
+    if (!custom.length) { toast.error('쿼리를 하나 이상 입력하세요.'); return }
+    setEditMode(false)
+    onReSearch(custom)
+  }
+
   return (
     <div style={{
       background: 'var(--bg-secondary)', border: '1px solid var(--border)',
@@ -94,37 +169,96 @@ function QueryPanel({ queries, currentIndex, mustContainTerms }) {
       </button>
       {open && (
         <div style={{ padding: '0 14px 12px' }}>
-          {queries.map((q, i) => {
-            const text = typeof q === 'string' ? q : q.text
-            const count = typeof q === 'object' ? q.result_count : null
-            const isSearching = i === currentIndex
-            const isDone = count !== null
-            return (
-              <div key={i} style={{
-                display: 'flex', alignItems: 'center', gap: 8,
-                padding: '5px 0', fontSize: 12,
-                borderBottom: i < queries.length - 1 ? '1px solid var(--border)' : 'none',
-              }}>
-                <span style={{
-                  width: 18, height: 18, borderRadius: '50%', flexShrink: 0,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10,
-                  background: isDone ? 'rgba(16,185,129,0.15)' : isSearching ? 'rgba(108,99,255,0.2)' : 'var(--bg-tertiary)',
-                  color: isDone ? 'var(--success)' : isSearching ? 'var(--accent)' : 'var(--text-secondary)',
+          {editMode ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {editedQueries.map((q, i) => (
+                <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <span style={{ fontSize: 11, color: 'var(--text-secondary)', width: 18, textAlign: 'center', flexShrink: 0 }}>{i + 1}</span>
+                  <textarea
+                    value={q}
+                    onChange={e => {
+                      const next = [...editedQueries]
+                      next[i] = e.target.value
+                      setEditedQueries(next)
+                    }}
+                    style={{
+                      flex: 1, fontFamily: 'monospace', fontSize: 12, padding: '6px 8px',
+                      background: 'var(--bg-primary)', color: 'var(--text-primary)',
+                      border: '1px solid var(--border)', borderRadius: 6,
+                      resize: 'vertical', minHeight: 32,
+                    }}
+                    rows={1}
+                  />
+                  <button
+                    onClick={() => setEditedQueries(prev => prev.filter((_, j) => j !== i))}
+                    style={{
+                      background: 'none', border: 'none', cursor: 'pointer',
+                      color: 'var(--danger)', fontSize: 16, padding: '0 4px',
+                    }}
+                    title="쿼리 삭제"
+                  >×</button>
+                </div>
+              ))}
+              <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                <button className="btn btn-sm btn-secondary" onClick={() => setEditedQueries(prev => [...prev, ''])}>
+                  + 쿼리 추가
+                </button>
+                <button className="btn btn-sm btn-primary" onClick={handleReSearch} disabled={isSearching}>
+                  수정된 쿼리로 재검색
+                </button>
+                <button className="btn btn-sm btn-secondary" onClick={() => {
+                  setEditMode(false)
+                  setEditedQueries(queries.map(q => typeof q === 'string' ? q : q.text))
                 }}>
-                  {isDone ? '✓' : isSearching ? '…' : i + 1}
-                </span>
-                <span style={{ flex: 1, fontFamily: 'monospace', color: 'var(--text-primary)' }}>{text}</span>
-                {isSearching && <span style={{ color: 'var(--accent)', fontSize: 11 }}>검색 중</span>}
-                {isDone && (
-                  <span style={{
-                    padding: '1px 6px', borderRadius: 10, fontSize: 10,
-                    background: count > 0 ? 'rgba(108,99,255,0.12)' : 'var(--bg-tertiary)',
-                    color: count > 0 ? 'var(--accent)' : 'var(--text-secondary)',
-                  }}>{count}건</span>
-                )}
+                  취소
+                </button>
               </div>
-            )
-          })}
+            </div>
+          ) : (
+            <>
+              {queries.map((q, i) => {
+                const text = typeof q === 'string' ? q : q.text
+                const count = typeof q === 'object' ? q.result_count : null
+                const isSearching = i === currentIndex
+                const isDone = count !== null
+                return (
+                  <div key={i} style={{
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    padding: '5px 0', fontSize: 12,
+                    borderBottom: i < queries.length - 1 ? '1px solid var(--border)' : 'none',
+                  }}>
+                    <span style={{
+                      width: 18, height: 18, borderRadius: '50%', flexShrink: 0,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10,
+                      background: isDone ? 'rgba(16,185,129,0.15)' : isSearching ? 'rgba(108,99,255,0.2)' : 'var(--bg-tertiary)',
+                      color: isDone ? 'var(--success)' : isSearching ? 'var(--accent)' : 'var(--text-secondary)',
+                    }}>
+                      {isDone ? '✓' : isSearching ? '…' : i + 1}
+                    </span>
+                    <span style={{ flex: 1, fontFamily: 'monospace', color: 'var(--text-primary)' }}>{text}</span>
+                    {isSearching && <span style={{ color: 'var(--accent)', fontSize: 11 }}>검색 중</span>}
+                    {isDone && (
+                      <span style={{
+                        padding: '1px 6px', borderRadius: 10, fontSize: 10,
+                        background: count > 0 ? 'rgba(108,99,255,0.12)' : 'var(--bg-tertiary)',
+                        color: count > 0 ? 'var(--accent)' : 'var(--text-secondary)',
+                      }}>{count}건</span>
+                    )}
+                  </div>
+                )
+              })}
+              <div style={{ marginTop: 8 }}>
+                <button
+                  className="btn btn-sm btn-secondary"
+                  style={{ fontSize: 11 }}
+                  onClick={() => setEditMode(true)}
+                  disabled={isSearching}
+                >
+                  쿼리 수정 / 재검색
+                </button>
+              </div>
+            </>
+          )}
           {mustContainTerms?.length > 0 && (
             <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid var(--border)', display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
               <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>필수 키워드:</span>
@@ -143,7 +277,7 @@ function QueryPanel({ queries, currentIndex, mustContainTerms }) {
   )
 }
 
-// ─── Filter stats bar ─────────────────────────────────────────────────────────
+// ─── Filter stats bar ────────────────────────────────────────────────────────
 
 function FilterStatsBar({ stats, onShowLow, showLow, lowCount }) {
   if (!stats?.raw) return null
@@ -177,15 +311,261 @@ function FilterStatsBar({ stats, onShowLow, showLow, lowCount }) {
   )
 }
 
-// ─── Paper card ───────────────────────────────────────────────────────────────
+// ─── Advanced filter panel ───────────────────────────────────────────────────
+
+function AdvancedFilterPanel({
+  venues, setVenues, fieldsOfStudy, setFieldsOfStudy,
+  authorFilter, setAuthorFilter,
+  yearFrom, setYearFrom, yearTo, setYearTo,
+  openAccessOnly, setOpenAccessOnly,
+  filterPresets, onSavePreset, onLoadPreset, onDeletePreset,
+}) {
+  const [open, setOpen] = useState(false)
+  const [customVenue, setCustomVenue] = useState('')
+  const [presetName, setPresetName] = useState('')
+
+  const toggleVenue = (v) => {
+    setVenues(prev => prev.includes(v) ? prev.filter(x => x !== v) : [...prev, v])
+  }
+
+  const removeVenue = (v) => setVenues(prev => prev.filter(x => x !== v))
+
+  const addCustomVenue = () => {
+    const v = customVenue.trim()
+    if (v && !venues.includes(v)) {
+      setVenues(prev => [...prev, v])
+    }
+    setCustomVenue('')
+  }
+
+  const toggleField = (f) => {
+    setFieldsOfStudy(prev => prev.includes(f) ? prev.filter(x => x !== f) : [...prev, f])
+  }
+
+  return (
+    <div style={{
+      background: 'var(--bg-secondary)', border: '1px solid var(--border)',
+      borderRadius: 8, marginBottom: 16, overflow: 'hidden',
+    }}>
+      <button onClick={() => setOpen(o => !o)} style={{
+        width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        padding: '10px 14px', background: 'none', border: 'none',
+        color: 'var(--text-primary)', cursor: 'pointer', fontSize: 13, fontWeight: 600,
+      }}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          고급 필터
+          {(venues.length > 0 || fieldsOfStudy.length > 0 || authorFilter || yearFrom || yearTo || openAccessOnly) && (
+            <span style={{
+              width: 8, height: 8, borderRadius: '50%',
+              background: 'var(--accent)', display: 'inline-block',
+            }} />
+          )}
+        </span>
+        <span style={{ color: 'var(--text-secondary)', fontSize: 11 }}>{open ? '▲ 접기' : '▼ 펼치기'}</span>
+      </button>
+
+      {open && (
+        <div style={{ padding: '0 14px 14px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {/* 저널 필터 */}
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 6, display: 'block' }}>
+              저널 / 학술지
+            </label>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+              {CATALYSIS_JOURNALS.map(j => (
+                <button
+                  key={j}
+                  onClick={() => toggleVenue(j)}
+                  style={{
+                    fontSize: 11, padding: '3px 10px', borderRadius: 14,
+                    border: venues.includes(j) ? '1px solid var(--accent)' : '1px solid var(--border)',
+                    background: venues.includes(j) ? 'rgba(108,99,255,0.15)' : 'var(--bg-tertiary)',
+                    color: venues.includes(j) ? 'var(--accent)' : 'var(--text-secondary)',
+                    cursor: 'pointer', transition: 'all 0.15s',
+                  }}
+                >
+                  {j}
+                </button>
+              ))}
+            </div>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <input
+                className="form-input"
+                placeholder="기타 저널 입력..."
+                value={customVenue}
+                onChange={e => setCustomVenue(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && addCustomVenue()}
+                style={{ flex: 1, fontSize: 12, padding: '5px 10px' }}
+              />
+              <button className="btn btn-sm btn-secondary" onClick={addCustomVenue} style={{ fontSize: 11 }}>
+                추가
+              </button>
+            </div>
+            {/* 선택된 저널 chips */}
+            {venues.length > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 8 }}>
+                {venues.map(v => (
+                  <span key={v} style={{
+                    fontSize: 11, padding: '2px 8px', borderRadius: 12,
+                    background: 'rgba(108,99,255,0.12)', color: 'var(--accent)',
+                    display: 'inline-flex', alignItems: 'center', gap: 4,
+                  }}>
+                    {v}
+                    <span
+                      onClick={() => removeVenue(v)}
+                      style={{ cursor: 'pointer', fontSize: 13, lineHeight: 1, fontWeight: 700 }}
+                    >×</span>
+                  </span>
+                ))}
+                <button
+                  onClick={() => setVenues([])}
+                  style={{
+                    fontSize: 10, padding: '2px 6px', background: 'none',
+                    border: '1px solid var(--border)', borderRadius: 12,
+                    color: 'var(--text-secondary)', cursor: 'pointer',
+                  }}
+                >전체 해제</button>
+              </div>
+            )}
+          </div>
+
+          {/* 연구 분야 */}
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 6, display: 'block' }}>
+              연구 분야 (다중 선택)
+            </label>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {FIELD_OPTIONS.map(f => (
+                <button
+                  key={f}
+                  onClick={() => toggleField(f)}
+                  style={{
+                    fontSize: 11, padding: '3px 10px', borderRadius: 14,
+                    border: fieldsOfStudy.includes(f) ? '1px solid var(--info)' : '1px solid var(--border)',
+                    background: fieldsOfStudy.includes(f) ? 'rgba(59,130,246,0.12)' : 'var(--bg-tertiary)',
+                    color: fieldsOfStudy.includes(f) ? 'var(--info)' : 'var(--text-secondary)',
+                    cursor: 'pointer', transition: 'all 0.15s',
+                  }}
+                >
+                  {f}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* 저자 필터 */}
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 6, display: 'block' }}>
+              저자
+            </label>
+            <input
+              className="form-input"
+              placeholder="저자명 입력 (예: Kim, Park)"
+              value={authorFilter}
+              onChange={e => setAuthorFilter(e.target.value)}
+              style={{ fontSize: 12, padding: '5px 10px', width: '100%', maxWidth: 360 }}
+            />
+          </div>
+
+          {/* 연도 범위 */}
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 6, display: 'block' }}>
+              연도 범위
+            </label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <input className="form-input" type="number" placeholder="시작 연도" value={yearFrom}
+                onChange={e => setYearFrom(e.target.value)} style={{ width: 100, fontSize: 12, padding: '5px 10px' }} />
+              <span style={{ color: 'var(--text-secondary)' }}>~</span>
+              <input className="form-input" type="number" placeholder="종료 연도" value={yearTo}
+                onChange={e => setYearTo(e.target.value)} style={{ width: 100, fontSize: 12, padding: '5px 10px' }} />
+            </div>
+          </div>
+
+          {/* Open Access */}
+          <div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 12 }}>
+              <input type="checkbox" checked={openAccessOnly} onChange={e => setOpenAccessOnly(e.target.checked)}
+                style={{ accentColor: 'var(--accent)', width: 16, height: 16 }} />
+              <span style={{ fontWeight: 500 }}>Open Access 논문만</span>
+            </label>
+          </div>
+
+          {/* Boolean 힌트 */}
+          <div style={{
+            fontSize: 11, color: 'var(--text-secondary)', padding: '8px 10px',
+            background: 'var(--bg-primary)', borderRadius: 6, lineHeight: 1.7,
+          }}>
+            <strong>검색 팁:</strong> 키워드에 AND, OR, NOT 등 불리언 연산자 사용 가능.
+            예) "iron oxide AND catalyst NOT nanoparticle"
+          </div>
+
+          {/* 필터 프리셋 */}
+          <div style={{
+            borderTop: '1px solid var(--border)', paddingTop: 12,
+            display: 'flex', flexDirection: 'column', gap: 8,
+          }}>
+            <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>
+              필터 프리셋
+            </label>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {filterPresets.map(p => (
+                <div key={p.id} style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 4,
+                  fontSize: 11, padding: '3px 10px', borderRadius: 14,
+                  border: '1px solid var(--border)', background: 'var(--bg-tertiary)',
+                }}>
+                  <span
+                    onClick={() => onLoadPreset(p)}
+                    style={{ cursor: 'pointer', color: 'var(--accent)', fontWeight: 500 }}
+                  >{p.name}</span>
+                  <span
+                    onClick={() => onDeletePreset(p.id)}
+                    style={{ cursor: 'pointer', color: 'var(--text-secondary)', fontSize: 13, fontWeight: 700 }}
+                  >×</span>
+                </div>
+              ))}
+            </div>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <input
+                className="form-input"
+                placeholder="프리셋 이름"
+                value={presetName}
+                onChange={e => setPresetName(e.target.value)}
+                style={{ fontSize: 12, padding: '5px 10px', width: 180 }}
+              />
+              <button
+                className="btn btn-sm btn-secondary"
+                style={{ fontSize: 11 }}
+                disabled={!presetName.trim()}
+                onClick={() => {
+                  onSavePreset(presetName.trim())
+                  setPresetName('')
+                }}
+              >
+                현재 필터 저장
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Enhanced Paper card ─────────────────────────────────────────────────────
 
 function PaperCard({ paper, savedIds, onSave, dimmed }) {
   const navigate = useNavigate()
-  const [expanded, setExpanded] = useState(false)
+  const [abstractExpanded, setAbstractExpanded] = useState(false)
+  const [authorsExpanded, setAuthorsExpanded] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [showTooltip, setShowTooltip] = useState(false)
+
   const isSaved = savedIds.has(paper.paper_id) || paper.is_saved
   const score = paper.relevance_score
   const sc = scoreColor(score)
+  const allAuthors = parseAuthors(paper.authors_json || paper.authors)
+  const cc = citationColor(paper.citation_count || 0)
 
   const handleSave = async () => {
     setSaving(true)
@@ -198,6 +578,7 @@ function PaperCard({ paper, savedIds, onSave, dimmed }) {
       border: `1px solid ${isSaved ? 'rgba(108,99,255,0.35)' : 'var(--border)'}`,
       borderRadius: 10, padding: 16, marginBottom: 10,
       opacity: dimmed ? 0.75 : 1,
+      transition: 'border-color 0.2s',
     }}>
       {/* Title */}
       <div
@@ -212,39 +593,93 @@ function PaperCard({ paper, savedIds, onSave, dimmed }) {
         {paper.title}
       </div>
 
-      {/* Meta row */}
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, alignItems: 'center', marginBottom: 8, fontSize: 12 }}>
-        <span style={{ color: 'var(--text-secondary)' }}>
-          {formatAuthors(paper.authors_json || paper.authors)}
-        </span>
+      {/* Authors */}
+      <div style={{ marginBottom: 6, fontSize: 12, color: 'var(--text-secondary)' }}>
+        {authorsExpanded ? (
+          <span>
+            {allAuthors.join(', ')}
+            {allAuthors.length > 1 && (
+              <button
+                onClick={() => setAuthorsExpanded(false)}
+                style={{
+                  background: 'none', border: 'none', cursor: 'pointer',
+                  color: 'var(--accent)', fontSize: 11, marginLeft: 6, padding: 0,
+                }}
+              >접기</button>
+            )}
+          </span>
+        ) : (
+          <span>
+            {formatAuthorsShort(paper.authors_json || paper.authors)}
+            {allAuthors.length > 1 && (
+              <button
+                onClick={() => setAuthorsExpanded(true)}
+                style={{
+                  background: 'none', border: 'none', cursor: 'pointer',
+                  color: 'var(--accent)', fontSize: 11, marginLeft: 6, padding: 0,
+                }}
+              >({allAuthors.length}명 전체 보기)</button>
+            )}
+          </span>
+        )}
+      </div>
+
+      {/* Meta badges row */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', marginBottom: 8, fontSize: 12 }}>
+        {/* 저널명 + 연도 */}
+        {paper.venue && (
+          <span style={{
+            color: 'var(--text-secondary)', fontStyle: 'italic',
+            maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }}>
+            {paper.venue}
+          </span>
+        )}
         {paper.year && (
           <span style={{ background: 'var(--bg-tertiary)', padding: '1px 7px', borderRadius: 10 }}>
             {paper.year}
           </span>
         )}
-        {paper.venue && (
-          <span style={{ color: 'var(--text-secondary)', fontStyle: 'italic', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {paper.venue}
-          </span>
-        )}
-        {paper.citation_count > 0 && (
+
+        {/* 인용수 badge */}
+        {(paper.citation_count != null && paper.citation_count >= 0) && (
           <span style={{
-            background: paper.citation_count >= 100 ? 'rgba(245,158,11,0.15)' : 'rgba(108,99,255,0.12)',
-            color: paper.citation_count >= 100 ? 'var(--warning)' : 'var(--accent)',
+            background: cc.bg, color: cc.text,
             padding: '2px 9px', borderRadius: 10, fontWeight: 700,
           }}>
-            인용 {paper.citation_count.toLocaleString()}
+            인용 {(paper.citation_count || 0).toLocaleString()}
           </span>
         )}
-        {/* AI 관련도 점수 */}
+
+        {/* AI 관련도 점수 badge + tooltip */}
         {score !== null && score !== undefined && (
-          <span style={{
-            background: sc.bg, color: sc.text,
-            padding: '2px 8px', borderRadius: 10, fontWeight: 600, fontSize: 11,
-          }} title="AI 관련도 점수 (0~10)">
+          <span
+            style={{
+              background: sc.bg, color: sc.text,
+              padding: '2px 8px', borderRadius: 10, fontWeight: 600, fontSize: 11,
+              position: 'relative', cursor: paper.relevance_reason ? 'help' : 'default',
+            }}
+            onMouseEnter={() => setShowTooltip(true)}
+            onMouseLeave={() => setShowTooltip(false)}
+          >
             관련도 {score}/10
+            {showTooltip && paper.relevance_reason && (
+              <div style={{
+                position: 'absolute', bottom: '100%', left: '50%', transform: 'translateX(-50%)',
+                marginBottom: 6, padding: '6px 10px', borderRadius: 6,
+                background: 'var(--bg-primary)', border: '1px solid var(--border)',
+                color: 'var(--text-primary)', fontSize: 11, fontWeight: 400,
+                whiteSpace: 'nowrap', maxWidth: 320,
+                zIndex: 100, boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+                overflow: 'hidden', textOverflow: 'ellipsis',
+              }}>
+                {paper.relevance_reason}
+              </div>
+            )}
           </span>
         )}
+
+        {/* 쿼리 검출 수 */}
         {paper.query_hit_count > 1 && (
           <span style={{
             background: 'rgba(59,130,246,0.1)', color: 'var(--info)',
@@ -253,30 +688,44 @@ function PaperCard({ paper, savedIds, onSave, dimmed }) {
             쿼리 {paper.query_hit_count}개 검출
           </span>
         )}
+
+        {/* Open Access badge */}
         {paper.is_open_access && (
-          <span style={{ background: 'rgba(16,185,129,0.12)', color: 'var(--success)', padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600 }}>
+          <span style={{
+            background: 'rgba(16,185,129,0.12)', color: 'var(--success)',
+            padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600,
+          }}>
             Open Access
           </span>
         )}
+
         {isSaved && <span style={{ color: 'var(--text-secondary)', fontSize: 11 }}>📌 저장됨</span>}
       </div>
 
       {/* Abstract */}
       {paper.abstract && (
         <div style={{ marginBottom: 8 }}>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6, maxHeight: expanded ? 'none' : 60, overflow: 'hidden' }}>
+          <div style={{
+            fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6,
+            maxHeight: abstractExpanded ? 'none' : 60, overflow: 'hidden',
+          }}>
             {paper.abstract}
           </div>
-          <button className="btn btn-sm btn-secondary" style={{ marginTop: 4, fontSize: 11 }} onClick={() => setExpanded(e => !e)}>
-            {expanded ? '접기 ▲' : '초록 보기 ▼'}
+          <button className="btn btn-sm btn-secondary" style={{ marginTop: 4, fontSize: 11 }}
+            onClick={() => setAbstractExpanded(e => !e)}>
+            {abstractExpanded ? '접기 ▲' : '초록 보기 ▼'}
           </button>
         </div>
       )}
 
       {/* Actions */}
-      <div style={{ display: 'flex', gap: 8 }}>
-        <button className={`btn btn-sm ${isSaved ? 'btn-secondary' : 'btn-primary'}`} onClick={handleSave} disabled={saving || isSaved}>
-          {saving ? '저장 중...' : isSaved ? '저장됨' : '+ 서재에 저장'}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <button
+          className={`btn btn-sm ${isSaved ? 'btn-secondary' : 'btn-primary'}`}
+          onClick={handleSave}
+          disabled={saving || isSaved}
+        >
+          {saving ? '저장 중...' : isSaved ? '저장됨' : '+ 서재에 추가'}
         </button>
         <button className="btn btn-sm btn-secondary" onClick={() => navigate(`/paper/${paper.paper_id}`)}>
           상세 보기
@@ -287,12 +736,19 @@ function PaperCard({ paper, savedIds, onSave, dimmed }) {
             DOI ↗
           </a>
         )}
+        {paper.is_open_access && paper.pdf_url && (
+          <a href={paper.pdf_url} target="_blank" rel="noreferrer"
+            className="btn btn-sm btn-secondary"
+            style={{ textDecoration: 'none', color: 'var(--success)' }}>
+            PDF 다운로드
+          </a>
+        )}
       </div>
     </div>
   )
 }
 
-// ─── Main ─────────────────────────────────────────────────────────────────────
+// ─── Main ────────────────────────────────────────────────────────────────────
 
 export default function Search() {
   const saved = loadSearchState()
@@ -315,11 +771,22 @@ export default function Search() {
   const [history, setHistory] = useState([])
   const [showHistory, setShowHistory] = useState(false)
 
-  // 클라이언트 필터 (고관련도 결과에만 적용)
-  const [minCitations, setMinCitations] = useState(0)
-  const [yearFrom, setYearFrom] = useState('')
-  const [yearTo, setYearTo] = useState('')
-  const [openAccessOnly, setOpenAccessOnly] = useState(false)
+  // 정렬
+  const [sortBy, setSortBy] = useState('relevance')
+
+  // 페이지네이션
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
+
+  // 고급 필터 (서버 전송용)
+  const [venues, setVenues] = useState(saved?.venues || [])
+  const [fieldsOfStudy, setFieldsOfStudy] = useState(saved?.fieldsOfStudy || [])
+  const [authorFilter, setAuthorFilter] = useState(saved?.authorFilter || '')
+  const [yearFrom, setYearFrom] = useState(saved?.yearFrom || '')
+  const [yearTo, setYearTo] = useState(saved?.yearTo || '')
+  const [openAccessOnly, setOpenAccessOnly] = useState(saved?.openAccessOnly || false)
+
+  // 필터 프리셋
+  const [filterPresets, setFilterPresets] = useState([])
 
   // 검색 완료 시 상태 저장
   useEffect(() => {
@@ -327,9 +794,11 @@ export default function Search() {
       saveSearchState({
         query, phase, queries, mustContainTerms, expandedTerms,
         results, lowRelevance, filterStats, cacheHit,
+        venues, fieldsOfStudy, authorFilter, yearFrom, yearTo, openAccessOnly,
       })
     }
-  }, [phase, query, queries, mustContainTerms, expandedTerms, results, lowRelevance, filterStats, cacheHit])
+  }, [phase, query, queries, mustContainTerms, expandedTerms, results, lowRelevance, filterStats, cacheHit,
+    venues, fieldsOfStudy, authorFilter, yearFrom, yearTo, openAccessOnly])
 
   // 검색 기록 로드
   const loadHistory = useCallback(async () => {
@@ -339,21 +808,46 @@ export default function Search() {
     } catch { /* ignore */ }
   }, [])
 
-  useEffect(() => { loadHistory() }, [loadHistory])
+  // 필터 프리셋 로드
+  const loadPresets = useCallback(async () => {
+    try {
+      const res = await searchAPI.getFilterPresets()
+      setFilterPresets(res.data || [])
+    } catch { /* ignore */ }
+  }, [])
 
-  const filteredResults = useMemo(() => results.filter(p => {
-    if (minCitations > 0 && (p.citation_count || 0) < minCitations) return false
-    if (yearFrom && p.year && p.year < parseInt(yearFrom)) return false
-    if (yearTo && p.year && p.year > parseInt(yearTo)) return false
-    if (openAccessOnly && !p.is_open_access) return false
-    return true
-  }), [results, minCitations, yearFrom, yearTo, openAccessOnly])
+  useEffect(() => { loadHistory(); loadPresets() }, [loadHistory, loadPresets])
 
-  // ── SSE event handler ──────────────────────────────────────────────────────
+  // 페이지네이션 리셋: 정렬/결과 변경 시
+  useEffect(() => { setVisibleCount(PAGE_SIZE) }, [sortBy, results])
+
+  // 클라이언트 필터 + 정렬
+  const processedResults = useMemo(() => {
+    let filtered = results
+    // 클라이언트 사이드 저널 필터 (서버에서 안 걸렸을 때 보조)
+    if (venues.length > 0) {
+      filtered = filtered.filter(p => {
+        if (!p.venue) return false
+        return venues.some(v => p.venue.toLowerCase().includes(v.toLowerCase()))
+      })
+    }
+    return sortResults(filtered, sortBy)
+  }, [results, sortBy, venues])
+
+  const paginatedResults = useMemo(() =>
+    processedResults.slice(0, visibleCount),
+    [processedResults, visibleCount]
+  )
+
+  const hasMore = visibleCount < processedResults.length
+
+  // ── SSE event handler ─────────────────────────────────────────────────────
   const handleEvent = (event) => {
     switch (event.phase) {
       case 'checking_cache': setPhase('checking_cache'); break
-      case 'generating':     setPhase('generating');     break
+      case 'translating': setPhase('translating'); break
+      case 'translated': setPhase('translated'); break
+      case 'generating': setPhase('generating'); break
       case 'queries_ready':
         setPhase('searching')
         setQueries(event.queries.map(q => ({ text: q, result_count: null })))
@@ -399,8 +893,9 @@ export default function Search() {
     }
   }
 
-  const handleSearch = async () => {
-    if (!query.trim()) { toast.error('검색어를 입력하세요.'); return }
+  // ── 검색 실행 (customQueries 지원) ────────────────────────────────────────
+  const handleSearch = async (customQueries = null) => {
+    if (!query.trim() && !customQueries) { toast.error('검색어를 입력하세요.'); return }
     if (abortRef.current) abortRef.current.abort()
     const controller = new AbortController()
     abortRef.current = controller
@@ -409,13 +904,21 @@ export default function Search() {
     setQueries([]); setResults([]); setLowRelevance([])
     setMustContainTerms([]); setExpandedTerms(''); setFilterStats(null)
     setCacheHit(false); setCurrentQueryIdx(-1); setEstimatedSeconds(null)
-    setShowLow(false)
+    setShowLow(false); setVisibleCount(PAGE_SIZE)
+
+    const body = {
+      keywords: query.trim(),
+      year_from: yearFrom ? parseInt(yearFrom) : null,
+      year_to: yearTo ? parseInt(yearTo) : null,
+      open_access_only: openAccessOnly,
+      venues: venues.length > 0 ? venues : undefined,
+      fields_of_study: fieldsOfStudy.length > 0 ? fieldsOfStudy : undefined,
+      author: authorFilter.trim() || undefined,
+      custom_queries: customQueries || undefined,
+    }
 
     try {
-      const response = await searchAPI.aiSearchStream(
-        { keywords: query.trim(), year_from: yearFrom ? parseInt(yearFrom) : null, year_to: yearTo ? parseInt(yearTo) : null, open_access_only: openAccessOnly },
-        controller.signal,
-      )
+      const response = await searchAPI.aiSearchStream(body, controller.signal)
       if (!response.ok) throw new Error(`서버 오류 ${response.status}`)
 
       const reader = response.body.getReader()
@@ -454,8 +957,43 @@ export default function Search() {
     } catch { toast.error('저장 실패') }
   }
 
-  const isSearching = ['checking_cache', 'generating', 'queries_ready', 'searching', 'processing', 'filtering', 'scoring'].includes(phase)
-  const hiddenByFilter = results.length - filteredResults.length
+  // 필터 프리셋 관리
+  const handleSavePreset = async (name) => {
+    try {
+      const filtersJson = JSON.stringify({ venues, fieldsOfStudy, authorFilter, yearFrom, yearTo, openAccessOnly })
+      await searchAPI.saveFilterPreset({ name, filters_json: filtersJson })
+      toast.success(`프리셋 "${name}" 저장됨`)
+      loadPresets()
+    } catch { toast.error('프리셋 저장 실패') }
+  }
+
+  const handleLoadPreset = (preset) => {
+    try {
+      const f = typeof preset.filters_json === 'string' ? JSON.parse(preset.filters_json) : preset.filters_json
+      if (f.venues) setVenues(f.venues)
+      if (f.fieldsOfStudy) setFieldsOfStudy(f.fieldsOfStudy)
+      if (f.authorFilter !== undefined) setAuthorFilter(f.authorFilter)
+      if (f.yearFrom !== undefined) setYearFrom(f.yearFrom)
+      if (f.yearTo !== undefined) setYearTo(f.yearTo)
+      if (f.openAccessOnly !== undefined) setOpenAccessOnly(f.openAccessOnly)
+      toast.success(`프리셋 "${preset.name}" 로드됨`)
+    } catch { toast.error('프리셋 로드 실패') }
+  }
+
+  const handleDeletePreset = async (id) => {
+    try {
+      await searchAPI.deleteFilterPreset(id)
+      setFilterPresets(prev => prev.filter(p => p.id !== id))
+      toast.success('프리셋 삭제됨')
+    } catch { toast.error('프리셋 삭제 실패') }
+  }
+
+  // 커스텀 쿼리로 재검색
+  const handleReSearchWithQueries = (customQueries) => {
+    handleSearch(customQueries)
+  }
+
+  const isSearching = ['checking_cache', 'translating', 'translated', 'generating', 'queries_ready', 'searching', 'processing', 'filtering', 'scoring'].includes(phase)
 
   return (
     <div className="page-content">
@@ -484,55 +1022,23 @@ export default function Search() {
         </div>
         {isSearching
           ? <button className="btn btn-danger" onClick={() => { abortRef.current?.abort(); setPhase('cancelled') }}>취소</button>
-          : <button className="btn btn-primary" onClick={handleSearch}>AI 검색</button>
+          : <button className="btn btn-primary" onClick={() => handleSearch()}>AI 검색</button>
         }
       </div>
 
-      {/* Filter row */}
-      <div style={{
-        display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center',
-        padding: '10px 14px', background: 'var(--bg-secondary)',
-        border: '1px solid var(--border)', borderRadius: 8, marginBottom: 16, fontSize: 12,
-      }}>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ color: 'var(--text-secondary)' }}>최소 인용수</span>
-          <select className="form-select" style={{ width: 90, fontSize: 12, padding: '4px 8px' }} value={minCitations} onChange={e => setMinCitations(parseInt(e.target.value))}>
-            <option value={0}>전체</option>
-            <option value={10}>10+</option>
-            <option value={50}>50+</option>
-            <option value={100}>100+</option>
-            <option value={500}>500+</option>
-          </select>
-        </label>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ color: 'var(--text-secondary)' }}>연도</span>
-          <input className="form-input" type="number" placeholder="시작" value={yearFrom} onChange={e => setYearFrom(e.target.value)} style={{ width: 75, fontSize: 12, padding: '4px 8px' }} />
-          <span style={{ color: 'var(--text-secondary)' }}>~</span>
-          <input className="form-input" type="number" placeholder="종료" value={yearTo} onChange={e => setYearTo(e.target.value)} style={{ width: 75, fontSize: 12, padding: '4px 8px' }} />
-        </label>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
-          <input type="checkbox" checked={openAccessOnly} onChange={e => setOpenAccessOnly(e.target.checked)} style={{ accentColor: 'var(--accent)' }} />
-          <span>Open Access만</span>
-        </label>
-        {phase === 'done' && (
-          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
-            {hiddenByFilter > 0 && (
-              <>
-                <span style={{ color: 'var(--warning)', fontSize: 11, background: 'rgba(245,158,11,0.1)', padding: '2px 8px', borderRadius: 6 }}>
-                  ⚠️ 필터로 {hiddenByFilter}건 숨김
-                </span>
-                <button className="btn btn-sm btn-secondary" style={{ fontSize: 11 }}
-                  onClick={() => { setMinCitations(0); setOpenAccessOnly(false); setYearFrom(''); setYearTo('') }}>
-                  초기화
-                </button>
-              </>
-            )}
-            <span style={{ color: 'var(--text-secondary)' }}>
-              <strong style={{ color: 'var(--text-primary)' }}>{filteredResults.length}</strong>건 표시
-            </span>
-          </div>
-        )}
-      </div>
+      {/* Advanced filter panel */}
+      <AdvancedFilterPanel
+        venues={venues} setVenues={setVenues}
+        fieldsOfStudy={fieldsOfStudy} setFieldsOfStudy={setFieldsOfStudy}
+        authorFilter={authorFilter} setAuthorFilter={setAuthorFilter}
+        yearFrom={yearFrom} setYearFrom={setYearFrom}
+        yearTo={yearTo} setYearTo={setYearTo}
+        openAccessOnly={openAccessOnly} setOpenAccessOnly={setOpenAccessOnly}
+        filterPresets={filterPresets}
+        onSavePreset={handleSavePreset}
+        onLoadPreset={handleLoadPreset}
+        onDeletePreset={handleDeletePreset}
+      />
 
       {/* Loading */}
       {isSearching && (
@@ -552,16 +1058,28 @@ export default function Search() {
         </div>
       )}
 
-      {/* Query panel */}
+      {/* Editable query panel */}
       {queries.length > 0 && (
-        <QueryPanel queries={queries} currentIndex={currentQueryIdx} mustContainTerms={mustContainTerms} />
+        <EditableQueryPanel
+          queries={queries}
+          currentIndex={currentQueryIdx}
+          mustContainTerms={mustContainTerms}
+          expandedTerms={expandedTerms}
+          onReSearch={handleReSearchWithQueries}
+          isSearching={isSearching}
+        />
       )}
 
       {/* Cache hit notice */}
       {phase === 'done' && cacheHit && (
-        <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 10, padding: '6px 12px', background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{
+          fontSize: 12, color: 'var(--text-secondary)', marginBottom: 10,
+          padding: '6px 12px', background: 'var(--bg-secondary)',
+          border: '1px solid var(--border)', borderRadius: 6,
+          display: 'flex', alignItems: 'center', gap: 8,
+        }}>
           ⚡ 캐시된 결과 (24시간 유효)
-          <button className="btn btn-sm btn-secondary" style={{ fontSize: 11 }} onClick={handleSearch}>새로 검색</button>
+          <button className="btn btn-sm btn-secondary" style={{ fontSize: 11 }} onClick={() => handleSearch()}>새로 검색</button>
         </div>
       )}
 
@@ -570,13 +1088,43 @@ export default function Search() {
         <FilterStatsBar stats={filterStats} lowCount={lowRelevance.length} showLow={showLow} onShowLow={() => setShowLow(s => !s)} />
       )}
 
+      {/* Sort + result count bar */}
+      {phase === 'done' && processedResults.length > 0 && (
+        <div style={{
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          marginBottom: 12, fontSize: 12,
+        }}>
+          <span style={{ color: 'var(--text-secondary)' }}>
+            <strong style={{ color: 'var(--text-primary)' }}>{processedResults.length}</strong>건 표시
+            {venues.length > 0 && results.length !== processedResults.length && (
+              <span style={{ marginLeft: 8, color: 'var(--warning)', fontSize: 11 }}>
+                (저널 필터로 {results.length - processedResults.length}건 숨김)
+              </span>
+            )}
+          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ color: 'var(--text-secondary)' }}>정렬:</span>
+            <select
+              className="form-select"
+              style={{ fontSize: 12, padding: '4px 8px', minWidth: 140 }}
+              value={sortBy}
+              onChange={e => setSortBy(e.target.value)}
+            >
+              {SORT_OPTIONS.map(opt => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+      )}
+
       {/* Cancelled */}
       {phase === 'cancelled' && (
         <div className="empty-state"><div className="empty-state-icon">⛔</div><p>검색이 취소되었습니다.</p></div>
       )}
 
       {/* No results */}
-      {phase === 'done' && filteredResults.length === 0 && results.length === 0 && (
+      {phase === 'done' && processedResults.length === 0 && results.length === 0 && (
         <div className="empty-state">
           <div className="empty-state-icon">📄</div>
           <p>AI 스코어링 기준을 통과한 논문이 없습니다.</p>
@@ -586,12 +1134,25 @@ export default function Search() {
         </div>
       )}
 
-      {/* Main results */}
-      {filteredResults.length > 0 && (
+      {/* Main results (paginated) */}
+      {paginatedResults.length > 0 && (
         <div>
-          {filteredResults.map(paper => (
+          {paginatedResults.map(paper => (
             <PaperCard key={paper.paper_id} paper={paper} savedIds={savedIds} onSave={handleSave} dimmed={false} />
           ))}
+        </div>
+      )}
+
+      {/* 더 불러오기 */}
+      {phase === 'done' && hasMore && (
+        <div style={{ display: 'flex', justifyContent: 'center', padding: '16px 0' }}>
+          <button
+            className="btn btn-secondary"
+            style={{ fontSize: 13, padding: '8px 32px' }}
+            onClick={() => setVisibleCount(prev => prev + PAGE_SIZE)}
+          >
+            더 불러오기 ({processedResults.length - visibleCount}건 남음)
+          </button>
         </div>
       )}
 
@@ -600,7 +1161,7 @@ export default function Search() {
         <div style={{ marginTop: 24 }}>
           <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
             <span>저관련도 결과 ({lowRelevance.length}건)</span>
-            <span style={{ fontSize: 11, fontWeight: 400 }}>— 키워드 필터 탈락 또는 AI 점수 {`<`} 6점</span>
+            <span style={{ fontSize: 11, fontWeight: 400 }}>— 키워드 필터 탈락 또는 AI 점수 {'<'} 6점</span>
           </div>
           {lowRelevance.map(paper => (
             <PaperCard key={paper.paper_id} paper={paper} savedIds={savedIds} onSave={handleSave} dimmed={true} />
@@ -659,7 +1220,7 @@ export default function Search() {
                   }}>
                     <span
                       style={{ flex: 1, cursor: 'pointer', color: 'var(--accent)', fontWeight: 500 }}
-                      onClick={() => { setQuery(h.keyword); }}
+                      onClick={() => { setQuery(h.keyword) }}
                       title="클릭하여 검색어 입력"
                     >
                       {h.keyword}

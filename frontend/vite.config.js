@@ -6,8 +6,8 @@ export default defineConfig({
   build: { outDir: '../backend/static', emptyOutDir: true },
   server: {
     proxy: {
-      '/api': 'http://localhost:7001',
-      '/pdfs': 'http://localhost:7001',
+      '/api': 'http://localhost:7010',
+      '/pdfs': 'http://localhost:7010',
     },
   },
 })

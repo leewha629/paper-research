@@ -5,7 +5,7 @@ const api = axios.create({ baseURL: '/api' })
 export const searchAPI = {
   search: (params) => api.get('/search', { params }),
   getPaper: (paperId) => api.get(`/search/paper/${paperId}`),
-  // AI 매개 검색: fetch stream 반환 (AbortController signal 지원)
+  getSimilar: (paperId) => api.get(`/search/similar/${paperId}`),
   aiSearchStream: (body, signal) =>
     fetch('/api/search/ai-search/stream', {
       method: 'POST',
@@ -16,6 +16,10 @@ export const searchAPI = {
   getHistory: (limit = 50) => api.get('/search/history', { params: { limit } }),
   deleteHistory: (id) => api.delete(`/search/history/${id}`),
   clearHistory: () => api.delete('/search/history'),
+  // 필터 프리셋
+  getFilterPresets: () => api.get('/search/filter-presets'),
+  saveFilterPreset: (data) => api.post('/search/filter-presets', data),
+  deleteFilterPreset: (id) => api.delete(`/search/filter-presets/${id}`),
 }
 
 export const papersAPI = {
@@ -26,6 +30,8 @@ export const papersAPI = {
   update: (id, data) => api.patch(`/papers/${id}`, data),
   delete: (id) => api.delete(`/papers/${id}`),
   getAnalyses: (id) => api.get(`/papers/${id}/analyses`),
+  bulkStatus: (paperIds, status) => api.post('/papers/bulk-status', { paper_ids: paperIds, status }),
+  bulkDelete: (paperIds) => api.post('/papers/bulk-delete', { paper_ids: paperIds }),
 }
 
 export const collectionsAPI = {
@@ -37,11 +43,50 @@ export const collectionsAPI = {
   removePaper: (colId, paperId) => api.delete(`/collections/${colId}/papers/${paperId}`),
 }
 
+export const tagsAPI = {
+  list: () => api.get('/tags'),
+  create: (data) => api.post('/tags', data),
+  update: (id, data) => api.put(`/tags/${id}`, data),
+  delete: (id) => api.delete(`/tags/${id}`),
+  addPaper: (tagId, paperId) => api.post(`/tags/${tagId}/papers`, { paper_id: paperId }),
+  removePaper: (tagId, paperId) => api.delete(`/tags/${tagId}/papers/${paperId}`),
+  getPapers: (tagId) => api.get(`/tags/${tagId}/papers`),
+}
+
+export const foldersAPI = {
+  list: () => api.get('/folders'),
+  create: (data) => api.post('/folders', data),
+  update: (id, data) => api.put(`/folders/${id}`, data),
+  delete: (id) => api.delete(`/folders/${id}`),
+  addPaper: (folderId, paperId) => api.post(`/folders/${folderId}/papers`, { paper_id: paperId }),
+  removePaper: (folderId, paperId) => api.delete(`/folders/${folderId}/papers/${paperId}`),
+  getPapers: (folderId) => api.get(`/folders/${folderId}/papers`),
+  movePaper: (folderId, paperId, targetFolderId) =>
+    api.put(`/folders/${folderId}/move`, { paper_id: paperId, target_folder_id: targetFolderId }),
+}
+
 export const aiAPI = {
   analyze: (paperId, analysisType) => api.post(`/ai/analyze/${paperId}`, { analysis_type: analysisType }),
   analyzeAll: (paperId) => api.post(`/ai/analyze-all/${paperId}`),
   testConnection: () => api.post('/ai/test-connection'),
   getHistory: (paperId) => api.get('/ai/history', { params: paperId ? { paper_id: paperId } : {} }),
+  suggestTags: (paperId) => api.post(`/ai/suggest-tags/${paperId}`),
+  // 배치 분석 (SSE stream)
+  batchAnalyzeStream: (body, signal) =>
+    fetch('/api/ai/batch-analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal,
+    }),
+  trendAnalyze: (paperIds) => api.post('/ai/trend-analyze', { paper_ids: paperIds }),
+  reviewDraft: (paperIds) => api.post('/ai/review-draft', { paper_ids: paperIds }),
+  // 프롬프트 관리
+  getPrompts: () => api.get('/ai/prompts'),
+  getPrompt: (name) => api.get(`/ai/prompts/${name}`),
+  updatePrompt: (name, data) => api.put(`/ai/prompts/${name}`, data),
+  createPrompt: (data) => api.post('/ai/prompts', data),
+  resetPrompts: () => api.post('/ai/prompts/reset'),
 }
 
 export const pdfsAPI = {
@@ -61,6 +106,41 @@ export const exportAPI = {
     }),
   report: (data) =>
     api.post('/export/report', data, { responseType: 'blob' }),
+  bibtex: (paperIds) =>
+    api.get('/export/bibtex', {
+      params: { paper_ids: paperIds.join(',') },
+      responseType: 'blob',
+    }),
+  ris: (paperIds) =>
+    api.get('/export/ris', {
+      params: { paper_ids: paperIds.join(',') },
+      responseType: 'blob',
+    }),
+  markdown: (paperIds) =>
+    api.get('/export/markdown', {
+      params: { paper_ids: paperIds.join(',') },
+      responseType: 'blob',
+    }),
+  bibliography: (paperIds, style) =>
+    api.post('/export/bibliography', { paper_ids: paperIds, style }, { responseType: 'blob' }),
+}
+
+export const alertsAPI = {
+  getSubscriptions: () => api.get('/subscriptions'),
+  createSubscription: (data) => api.post('/subscriptions', data),
+  deleteSubscription: (id) => api.delete(`/subscriptions/${id}`),
+  toggleSubscription: (id) => api.put(`/subscriptions/${id}/toggle`),
+  getAlerts: (params) => api.get('/alerts', { params }),
+  getAlertCount: () => api.get('/alerts/count'),
+  markRead: (id) => api.put(`/alerts/${id}/read`),
+  markAllRead: () => api.put('/alerts/read-all'),
+  checkNow: () => api.post('/alerts/check'),
+}
+
+export const dashboardAPI = {
+  getStats: () => api.get('/dashboard/stats'),
+  runAgent: (body = {}) => api.post('/dashboard/agent/run', body),
+  agentStatus: () => api.get('/dashboard/agent/status'),
 }
 
 export const settingsAPI = {
