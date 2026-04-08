@@ -119,17 +119,29 @@ SYSTEM_PROMPTS = {
         "추가로 논문 내용에서 도출된 키워드를 보충하세요."
     ),
     "structured": (
-        "논문을 분석하여 아래 JSON 형식으로 구조화된 정보를 추출하세요.\n"
-        "반드시 아래 키를 가진 JSON 객체 하나만 반환하세요. 마크다운이나 설명 텍스트는 포함하지 마세요.\n\n"
+        "논문을 분석하여 구조화된 JSON 정보를 추출하세요.\n\n"
+        "### 출력 형식 (반드시 준수)\n"
+        "- 응답은 JSON 객체 단 하나. 다른 텍스트 절대 포함 금지.\n"
+        "- markdown fence (```json ... ```) 사용 금지. 순수 JSON만.\n"
+        "- 모든 키와 문자열 값은 큰따옴표(\").\n"
+        "- 누락 정보는 \"초록만으로 확인 불가\"로 채울 것 (null 금지).\n"
+        "- 빈 목록은 []로 표시.\n\n"
+        "### 스키마\n"
         "{\n"
         '  "purpose": "연구 목적 (1-2문장, 한국어)",\n'
         '  "catalysts": ["촉매1 (화학식)", "촉매2"],\n'
         '  "synthesis_methods": ["합성법1", "합성법2"],\n'
-        '  "characterization_techniques": ["XRD", "BET", ...],\n'
-        '  "key_results": ["핵심 결과1", "핵심 결과2", ...],\n'
+        '  "characterization_techniques": ["XRD", "BET"],\n'
+        '  "key_results": ["핵심 결과1", "핵심 결과2"],\n'
         '  "relevance_to_environmental_catalysis": "환경 촉매 분야와의 관련성 (1-2문장)"\n'
         "}\n\n"
-        "불확실한 항목은 null로, 빈 목록은 []로 표시하세요."
+        "### 예시 (반드시 이 형식으로)\n"
+        "{\"purpose\": \"Cu/SSZ-13 제올라이트의 NH3-SCR 저온 활성 향상 연구\", "
+        "\"catalysts\": [\"Cu/SSZ-13\", \"Fe/SSZ-13\"], "
+        "\"synthesis_methods\": [\"수열합성\", \"이온교환\"], "
+        "\"characterization_techniques\": [\"XRD\", \"BET\", \"H2-TPR\", \"XPS\"], "
+        "\"key_results\": [\"200°C에서 NOx 전환율 95%\", \"500시간 안정성 유지\"], "
+        "\"relevance_to_environmental_catalysis\": \"디젤 배가스 NOx 저감용 SCR 촉매 개발에 직접 적용 가능\"}"
     ),
     "trend": (
         "주어진 여러 논문의 분석 결과를 종합하여 연구 동향을 파악하세요.\n\n"
@@ -308,18 +320,20 @@ async def analyze_paper(
     system_prompt = get_system_prompt(db, analysis_type)
     user_prompt = build_user_prompt(paper)
 
-    # Phase B 마이그레이션 #2: analyze_paper. structured면 expect="json", 아니면 "text".
+    # FIX_ANALYZE_SPEED: 디코더 grammar 비활성화. 모든 분석을 expect="text"로 호출하고
+    # structured만 사후 parse_json_response로 dict 변환. max_retries=1, timeout_s=60 강제.
     from services.llm import LLMError
+    from services.llm.exceptions import LLMSchemaError
     from services.llm.router import call_llm
 
-    expect_mode = "json" if analysis_type == "structured" else "text"
-
     try:
-        value, backend, model_name = await call_llm(
+        raw_text, backend, model_name = await call_llm(
             db,
             system=system_prompt,
             user=user_prompt,
-            expect=expect_mode,
+            expect="text",
+            max_retries=1,
+            timeout_s=60.0,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -328,13 +342,19 @@ async def analyze_paper(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI 분석 오류: {str(e)}")
 
-    # structured면 dict가 들어오므로 다시 직렬화 (legacy 컬럼 호환)
     result_json_str = None
-    if expect_mode == "json":
-        result_text = json.dumps(value, ensure_ascii=False)
+    if analysis_type == "structured":
+        try:
+            parsed = parse_json_response(raw_text)
+        except (json.JSONDecodeError, ValueError) as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"AI 응답 형식 오류: structured JSON 파싱 실패 ({str(e)[:120]})",
+            )
+        result_text = json.dumps(parsed, ensure_ascii=False)
         result_json_str = result_text
     else:
-        result_text = value
+        result_text = raw_text
 
     # 기존 동일 분석 삭제
     existing = db.query(AIAnalysisResult).filter(
@@ -373,7 +393,7 @@ async def analyze_all(paper_id: int, db: Session = Depends(get_db)):
     # 단일 논문 대상 분석 유형만 (trend, review_draft 제외)
     single_types = [t for t in ANALYSIS_TYPES if t not in ("trend", "review_draft")]
 
-    # Phase B 마이그레이션 #3: analyze_all
+    # FIX_ANALYZE_SPEED: 모든 분석을 expect="text"로. structured만 사후 파싱.
     from services.llm import LLMError as _LLMError_AA
     from services.llm.router import call_llm as _call_llm_AA
 
@@ -382,14 +402,15 @@ async def analyze_all(paper_id: int, db: Session = Depends(get_db)):
     for analysis_type in single_types:
         system_prompt = get_system_prompt(db, analysis_type)
         user_prompt = build_user_prompt(paper)
-        expect_mode = "json" if analysis_type == "structured" else "text"
 
         try:
-            value, backend, model_name = await _call_llm_AA(
+            raw_text, backend, model_name = await _call_llm_AA(
                 db,
                 system=system_prompt,
                 user=user_prompt,
-                expect=expect_mode,
+                expect="text",
+                max_retries=1,
+                timeout_s=60.0,
             )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
@@ -399,11 +420,18 @@ async def analyze_all(paper_id: int, db: Session = Depends(get_db)):
             raise HTTPException(status_code=500, detail=f"AI 분석 오류 ({analysis_type}): {str(e)}")
 
         result_json_str = None
-        if expect_mode == "json":
-            result_text = json.dumps(value, ensure_ascii=False)
+        if analysis_type == "structured":
+            try:
+                parsed = parse_json_response(raw_text)
+            except (json.JSONDecodeError, ValueError) as e:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"AI 응답 형식 오류 ({analysis_type}): structured JSON 파싱 실패 ({str(e)[:120]})",
+                )
+            result_text = json.dumps(parsed, ensure_ascii=False)
             result_json_str = result_text
         else:
-            result_text = value
+            result_text = raw_text
 
         existing = db.query(AIAnalysisResult).filter(
             AIAnalysisResult.paper_id == paper_id,
@@ -495,21 +523,24 @@ async def batch_analyze(body: dict, db: Session = Depends(get_db)):
                 try:
                     system_prompt = get_system_prompt(db, atype)
                     user_prompt = build_user_prompt(paper)
-                    expect_mode = "json" if atype == "structured" else "text"
 
-                    value, backend, model_name = await _call_llm_BA(
+                    # FIX_ANALYZE_SPEED: expect="text" 강제 + 사후 파싱.
+                    raw_text, backend, model_name = await _call_llm_BA(
                         db,
                         system=system_prompt,
                         user=user_prompt,
-                        expect=expect_mode,
+                        expect="text",
+                        max_retries=1,
+                        timeout_s=60.0,
                     )
 
                     result_json_str = None
-                    if expect_mode == "json":
-                        result_text = json.dumps(value, ensure_ascii=False)
+                    if atype == "structured":
+                        parsed = parse_json_response(raw_text)
+                        result_text = json.dumps(parsed, ensure_ascii=False)
                         result_json_str = result_text
                     else:
-                        result_text = value
+                        result_text = raw_text
 
                     # 기존 분석 삭제
                     existing = db.query(AIAnalysisResult).filter(
