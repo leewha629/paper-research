@@ -12,19 +12,28 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class RelevanceJudgment(BaseModel):
-    """관련도 평가 (Role 2: 점수 + 한국어 한 문장 이유)."""
+    """관련도 평가 (Role 2: 점수 + 한국어 한 문장 이유 + 매칭 메커니즘 토큰).
+
+    Phase D 캘리브레이션:
+    - 점수 범위 0~10으로 확장 (CF₄ 직접 일치는 10점)
+    - matched_mechanism_tokens 추가 (디버깅/감사용 — 모델이 어떤 토큰에 반응했는지)
+    """
 
     score: int = Field(
         ...,
         ge=0,
-        le=9,
-        description="0~9 정수. 0=완전 무관, 5=인접/주변, 7=정확히 일치+상세, 9=완벽",
+        le=10,
+        description="0~10 정수. 0=완전 무관, 5=인접/참고, 7=풀분석 추천, 10=CF₄ 직접+촉매 설계",
     )
     reason: str = Field(
         ...,
-        min_length=5,
+        min_length=2,
         max_length=200,
         description="한국어 한 문장 이유 (최대 200자)",
+    )
+    matched_mechanism_tokens: List[str] = Field(
+        default_factory=list,
+        description="모델이 매칭한 메커니즘/반응물 토큰 (디버깅용, 빈 리스트 허용)",
     )
 
     @field_validator("reason")
@@ -32,6 +41,18 @@ class RelevanceJudgment(BaseModel):
     def reason_no_newlines(cls, v: str) -> str:
         # 한 문장 강제 — 줄바꿈 제거
         return " ".join(v.split())
+
+    @field_validator("matched_mechanism_tokens")
+    @classmethod
+    def clean_tokens(cls, v: List[str]) -> List[str]:
+        out: List[str] = []
+        for t in v or []:
+            if not isinstance(t, str):
+                continue
+            s = " ".join(t.split()).strip()
+            if s:
+                out.append(s)
+        return out
 
 
 class KeywordList(BaseModel):
