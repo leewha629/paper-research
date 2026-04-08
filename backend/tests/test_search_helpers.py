@@ -1,11 +1,12 @@
-"""Phase A 회귀 테스트 — search.py 헬퍼 3건 (#5~#7).
+"""Phase C 회귀 테스트 — search.py 헬퍼 fail-loud 동작 (#16, #17, #18).
 
-PLAN §A.2 매핑 (모두 **현재 폴백 동작 캡처** = 버그 잠금):
-    #5 test_translate_korean_returns_original_on_exception
-    #6 test_expand_keywords_returns_single_keyword_on_exception
-    #7 test_ai_score_papers_returns_all_as_high_on_exception
+PLAN §A.2 매핑 (Phase A의 #5, #6, #7을 교체):
+    #16 test_translate_raises_when_ai_fails    (Phase A의 #5와 교체)
+    #17 test_expand_keywords_raises_when_ai_fails (Phase A의 #6과 교체)
+    #18 test_ai_score_papers_raises_when_ai_fails (Phase A의 #7과 교체)
 
-이 테스트들은 Phase C에서 fail-loud(raise) 버전으로 교체될 예정이다.
+이 테스트들은 Phase C에서 사일런트 폴백을 제거한 후의 동작을 잠근다 — 즉
+AI 실패는 절대 조용히 무시되지 않고 항상 LLMError 계열로 raise된다.
 """
 from __future__ import annotations
 
@@ -16,64 +17,51 @@ from routers.search import (
     generate_queries_and_terms,
     translate_korean_to_english,
 )
+from services.llm.exceptions import LLMError
 
 
-# ─── #5 ─── (현재 폴백 캡처) ────────────────────────────────────────────
+# ─── #16 ────────────────────────────────────────────────────────────────
 @pytest.mark.asyncio
-async def test_translate_korean_returns_original_on_exception(db_session, mock_ai):
-    """**현재 폴백 캡처**: AI 실패 시 원문 한글이 영문 번역 자리에도 그대로
-    들어간다 → 사용자는 번역 실패를 모른 채 한글로 S2를 검색하게 됨.
+async def test_translate_raises_when_ai_fails(db_session, mock_ai):
+    """Phase C: 번역 AI 실패는 그대로 호출자에게 전파된다.
 
-    잠그는 동작: search.py:79-83의 `try/except: return text, text`.
-    Phase C 후속 테스트(#16)는 LLMError raise를 기대한다.
+    잠그는 동작: search.py의 try/except 폴백이 제거되어 LLMError 또는 raw
+    Exception이 그대로 raise. GET /search 핸들러는 글로벌 LLMError 핸들러를
+    통해 503으로 응답.
     """
-    mock_ai.set_default_error(RuntimeError("ollama unavailable"))
+    mock_ai.set_default_error(LLMError("ollama unavailable"))
 
-    translated, original = await translate_korean_to_english(
-        "이산화탄소 환원 촉매", db_session
-    )
+    with pytest.raises(LLMError):
+        await translate_korean_to_english("이산화탄소 환원 촉매", db_session)
 
-    # 버그: 영문 자리에 한글 원문이 들어감
-    assert translated == "이산화탄소 환원 촉매"
-    assert original == "이산화탄소 환원 촉매"
     assert len(mock_ai.calls) == 1
 
 
-# ─── #6 ─── (현재 폴백 캡처) ────────────────────────────────────────────
+# ─── #17 ────────────────────────────────────────────────────────────────
 @pytest.mark.asyncio
-async def test_expand_keywords_returns_single_keyword_on_exception(
-    db_session, mock_ai
-):
-    """**현재 폴백 캡처**: AI 쿼리 확장 실패 시 입력 키워드 하나만 담은
-    리스트를 반환 → 검색 범위가 1개 쿼리로 급감하지만 사용자는 모름.
+async def test_expand_keywords_raises_when_ai_fails(db_session, mock_ai):
+    """Phase C: 쿼리 확장 AI 실패는 그대로 raise.
 
-    잠그는 동작: search.py:372-375의 `except: pass; return [keywords], [], ""`.
-    Phase C 후속 테스트(#17)는 503 또는 명시적 warning을 기대한다.
+    상위 호출자(SSE generate)는 이를 catch하여 warning 이벤트로 강등하지만,
+    헬퍼 자체는 폴백을 제공하지 않는다 — 사일런트 단일-키워드 폴백 금지.
     """
-    mock_ai.set_default_error(RuntimeError("ollama timeout"))
+    mock_ai.set_default_error(LLMError("ollama timeout"))
 
-    queries, terms, expanded = await generate_queries_and_terms(
-        "CF4 abatement", db_session, num_queries=6
-    )
-
-    assert queries == ["CF4 abatement"]
-    assert terms == []
-    assert expanded == ""
+    with pytest.raises(LLMError):
+        await generate_queries_and_terms(
+            "CF4 abatement", db_session, num_queries=6
+        )
 
 
-# ─── #7 ─── (현재 폴백 캡처) ────────────────────────────────────────────
+# ─── #18 ────────────────────────────────────────────────────────────────
 @pytest.mark.asyncio
-async def test_ai_score_papers_returns_all_as_high_on_exception(
-    db_session, mock_ai
-):
-    """**현재 폴백 캡처**: AI 점수 매기기 실패 시 모든 논문을 첫 번째 반환값
-    (high_relevance) 자리에 그대로 넣고 relevance_score=None으로 둔다.
+async def test_ai_score_papers_raises_when_ai_fails(db_session, mock_ai):
+    """Phase C: AI 점수 매기기 실패는 그대로 raise.
 
-    이는 RELEVANCE_THRESHOLD 필터링을 사실상 우회시킨다 → AUDIT §9 #1.
-    잠그는 동작: search.py:440-445의 `except: ... return papers, []`.
-    Phase C 후속 테스트(#18, #19)는 503을 기대한다.
+    잠그는 동작: 더 이상 모든 논문을 high 버킷에 임의로 넣지 않는다.
+    AUDIT §9 #1 ("RELEVANCE_THRESHOLD 우회") 해결.
     """
-    mock_ai.set_default_error(RuntimeError("ollama down"))
+    mock_ai.set_default_error(LLMError("ollama down"))
 
     papers_in = [
         {"paperId": "p1", "title": "Random paper 1", "abstract": "abc"},
@@ -81,12 +69,5 @@ async def test_ai_score_papers_returns_all_as_high_on_exception(
         {"paperId": "p3", "title": "Random paper 3", "abstract": "ghi"},
     ]
 
-    high, low = await ai_score_papers(papers_in, "CF4 abatement", db_session)
-
-    # 버그 #1: 전체가 high에 들어감 (임계값 우회)
-    assert len(high) == 3
-    assert low == []
-    # 버그 #2: relevance_score가 None이지만 결과에 포함됨
-    for p in high:
-        assert p["relevance_score"] is None
-        assert p["relevance_reason"] is None
+    with pytest.raises(LLMError):
+        await ai_score_papers(papers_in, "CF4 abatement", db_session)

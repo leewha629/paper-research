@@ -2,6 +2,45 @@ import axios from 'axios'
 
 const api = axios.create({ baseURL: '/api' })
 
+// ─── Phase C — fail-loud 에러 표준화 ─────────────────────────────────────
+// 백엔드 글로벌 LLMError 핸들러는 503 + {error, detail, path}를 반환한다.
+// 이 인터셉터는 모든 axios 응답을 가로채 표준화된 error 객체를 throw한다:
+//   { status, code, detail, raw }
+// UI는 catch에서 err.code (예: "ai_timeout", "ai_upstream_unavailable")를
+// 보고 빨간/노란 배너를 결정한다.
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    const status = error.response?.status
+    const data = error.response?.data
+    const code = data?.error || (status === 503 ? 'ai_unavailable' : 'http_error')
+    const detail = data?.detail || error.message || '알 수 없는 오류'
+    const enriched = new Error(detail)
+    enriched.status = status
+    enriched.code = code
+    enriched.detail = detail
+    enriched.raw = data
+    enriched.isLLMError = status === 503 && typeof data?.error === 'string' && data.error.startsWith('ai_')
+    return Promise.reject(enriched)
+  }
+)
+
+// SSE 스트림 응답 한 줄(JSON)에서 fail-loud 분기 필드를 표준화해 꺼낸다.
+// 사용 예:
+//   const evt = parseSseEvent(line)
+//   if (evt.phase === 'error' && evt.error) showRedBanner(evt)
+//   if (evt.phase === 'warning' && evt.warning) showYellowBanner(evt)
+export function parseSseEvent(line) {
+  if (!line) return null
+  try {
+    const json = line.startsWith('data:') ? line.slice(5).trim() : line.trim()
+    if (!json) return null
+    return JSON.parse(json)
+  } catch {
+    return null
+  }
+}
+
 export const searchAPI = {
   search: (params) => api.get('/search', { params }),
   getPaper: (paperId) => api.get(`/search/paper/${paperId}`),

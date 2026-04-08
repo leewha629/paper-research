@@ -196,6 +196,14 @@ class Alert(Base):
     is_read = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    # --- Phase C (Migration 002): AI 점수 실패 표면화 ---
+    # is_ai_failed=True인 행은 relevance_score=NULL.
+    # ai_failure_reason은 enum-like 짧은 코드로, GROUP BY 집계를 위해 분리.
+    # 가능한 값: "timeout" | "schema_invalid" | "upstream_5xx" | "ollama_down" | "unknown"
+    is_ai_failed = Column(Boolean, default=False, nullable=False, index=True)
+    ai_failure_reason = Column(String, nullable=True)
+    ai_failure_detail = Column(Text, nullable=True)  # raw 메시지 (디버깅용)
+
     subscription = relationship("Subscription")
 
 

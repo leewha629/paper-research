@@ -765,6 +765,10 @@ export default function Search() {
   const [estimatedSeconds, setEstimatedSeconds] = useState(null)
   const [savedIds, setSavedIds] = useState(new Set())
   const [showLow, setShowLow] = useState(false)
+  // Phase C — fail-loud 표면화. aiError는 빨간 배너 (검색 중단), aiWarning은 노란 배너 (계속 진행).
+  // 형태: { code, message, status } | null
+  const [aiError, setAiError] = useState(null)
+  const [aiWarning, setAiWarning] = useState(null)
   const abortRef = useRef(null)
 
   // 검색 기록
@@ -885,10 +889,29 @@ export default function Search() {
         if (event.expanded_terms) setExpandedTerms(event.expanded_terms)
         loadHistory()
         break
-      case 'warning': toast(event.message, { icon: '⚠️' }); break
+      case 'warning':
+        // Phase C: 쿼리 확장 실패 등은 노란 배너로 표면화 (단순 toast 대신 영구 표시)
+        if (event.warning) {
+          setAiWarning({
+            code: event.warning,
+            message: event.message || 'AI 일부 단계가 실패했습니다.',
+          })
+        } else {
+          toast(event.message, { icon: '⚠️' })
+        }
+        break
       case 'error':
         setPhase('error')
-        toast.error(event.message || '검색 오류')
+        // Phase C: SSE error 이벤트가 LLMError code를 포함하면 빨간 배너로 표면화
+        if (event.error) {
+          setAiError({
+            code: event.error,
+            message: event.message || 'AI 백엔드 호출 실패',
+            status: event.status || 503,
+          })
+        } else {
+          toast.error(event.message || '검색 오류')
+        }
         break
     }
   }
@@ -905,6 +928,8 @@ export default function Search() {
     setMustContainTerms([]); setExpandedTerms(''); setFilterStats(null)
     setCacheHit(false); setCurrentQueryIdx(-1); setEstimatedSeconds(null)
     setShowLow(false); setVisibleCount(PAGE_SIZE)
+    // Phase C: 새 검색마다 이전 fail-loud 배너 초기화
+    setAiError(null); setAiWarning(null)
 
     const body = {
       keywords: query.trim(),
@@ -1039,6 +1064,68 @@ export default function Search() {
         onLoadPreset={handleLoadPreset}
         onDeletePreset={handleDeletePreset}
       />
+
+      {/* Phase C — fail-loud 빨간 배너 (503) */}
+      {aiError && (
+        <div style={{
+          fontSize: 13, marginBottom: 12,
+          padding: '12px 14px',
+          background: 'rgba(210, 63, 63, 0.12)',
+          border: '1px solid rgba(210, 63, 63, 0.55)',
+          borderRadius: 8,
+          color: 'var(--text-primary)',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+        }}>
+          <div>
+            <div style={{ fontWeight: 700, marginBottom: 4, color: '#ff6b6b' }}>
+              ⛔ AI 백엔드 호출 실패 ({aiError.code})
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+              {aiError.code === 'ai_upstream_unavailable' && 'Ollama 서버에 연결할 수 없습니다. ollama serve가 실행 중인지 확인해 주세요.'}
+              {aiError.code === 'ai_timeout' && 'AI 응답이 타임아웃되었습니다. 모델이 로딩 중일 수 있으니 잠시 후 재시도해 주세요.'}
+              {aiError.code === 'ai_schema_invalid' && 'AI 응답이 예상 형식과 다릅니다. 모델/프롬프트 점검이 필요합니다.'}
+              {!['ai_upstream_unavailable','ai_timeout','ai_schema_invalid'].includes(aiError.code) && (aiError.message || '알 수 없는 AI 오류')}
+            </div>
+            {aiError.message && (
+              <div style={{ fontSize: 11, color: 'var(--text-secondary)', fontFamily: 'monospace', marginTop: 4 }}>
+                {aiError.message}
+              </div>
+            )}
+          </div>
+          <button className="btn btn-primary btn-sm" onClick={() => handleSearch()}>
+            재시도
+          </button>
+        </div>
+      )}
+
+      {/* Phase C — 노란 경고 배너 (warning) */}
+      {aiWarning && (
+        <div style={{
+          fontSize: 13, marginBottom: 12,
+          padding: '10px 14px',
+          background: 'rgba(234, 179, 8, 0.12)',
+          border: '1px solid rgba(234, 179, 8, 0.55)',
+          borderRadius: 8,
+          color: 'var(--text-primary)',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+        }}>
+          <div>
+            <div style={{ fontWeight: 700, marginBottom: 4, color: '#eab308' }}>
+              ⚠️ {aiWarning.code === 'ai_expand_failed' ? 'AI 쿼리 확장 실패' : 'AI 경고'}
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+              {aiWarning.message}
+            </div>
+          </div>
+          <button
+            className="btn btn-sm btn-secondary"
+            onClick={() => setAiWarning(null)}
+            style={{ fontSize: 11 }}
+          >
+            닫기
+          </button>
+        </div>
+      )}
 
       {/* Loading */}
       {isSearching && (

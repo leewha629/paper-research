@@ -1,6 +1,7 @@
 import os
 import sys
 import asyncio
+import logging
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,12 +14,56 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from database import engine, SessionLocal, Base
 from models import Paper, Collection, PaperCollection, AIAnalysisResult, AppSetting
 from routers import search, papers, ai, pdfs, export, settings, tags, folders, alerts, dashboard
+from services.llm.exceptions import (
+    LLMError,
+    LLMTimeoutError,
+    LLMSchemaError,
+    LLMUpstreamError,
+)
+
+logger = logging.getLogger("paper_research.main")
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PDF_DIR = os.path.join(BASE_DIR, "data", "pdfs")
 STATIC_DIR = os.path.join(BASE_DIR, "backend", "static")
 
 app = FastAPI(title="Paper Research API", version="1.0.0")
+
+
+# ─── LLMError 글로벌 핸들러 (Phase C — fail-loud) ───────────────────────
+# strict_call이 raise하는 LLMError 계열을 사용자 가시 503으로 매핑한다.
+# 응답 스키마: {"error": "<error_code>", "detail": "<human-readable>"}
+# error_code는 프론트가 분기할 수 있도록 enum-like 짧은 코드.
+def _llm_error_code(exc: LLMError) -> str:
+    if isinstance(exc, LLMTimeoutError):
+        return "ai_timeout"
+    if isinstance(exc, LLMSchemaError):
+        return "ai_schema_invalid"
+    if isinstance(exc, LLMUpstreamError):
+        return "ai_upstream_unavailable"
+    return "ai_unavailable"
+
+
+@app.exception_handler(LLMError)
+async def llm_error_handler(request: Request, exc: LLMError) -> JSONResponse:
+    code = _llm_error_code(exc)
+    detail = str(exc) or "AI 백엔드 호출이 실패했습니다."
+    logger.warning(
+        "LLMError on %s %s: code=%s detail=%s",
+        request.method,
+        request.url.path,
+        code,
+        detail,
+    )
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error": code,
+            "detail": detail,
+            "path": request.url.path,
+        },
+    )
+
 
 # CORS
 app.add_middleware(

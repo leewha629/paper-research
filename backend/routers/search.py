@@ -67,8 +67,9 @@ async def translate_korean_to_english(text: str, db: Session) -> tuple[str, str]
     한국어 입력을 영어 학술 검색 쿼리로 번역.
     반환: (영문 번역, 원문 한국어)
 
-    Phase B 마이그레이션 #9: strict_call(expect="text"). 폴백 try/except는
-    PLAN §B.3 지침대로 그대로 유지 (Phase C에서 fail-loud 503으로 교체 예정).
+    Phase C: 폴백 제거. AI 실패 시 LLMError가 그대로 호출자에게 전파된다 →
+    GET /search 핸들러는 글로벌 LLMError 핸들러를 통해 503으로 응답.
+    SSE 스트림 호출자는 LLMError를 잡아 명시적인 error 이벤트를 emit한다.
     """
     from services.llm.router import call_llm
 
@@ -80,11 +81,8 @@ async def translate_korean_to_english(text: str, db: Session) -> tuple[str, str]
     )
     user = f"Translate to English academic query:\n{text}"
 
-    try:
-        result_text, _, _ = await call_llm(db, system=system, user=user, expect="text")
-        return result_text.strip(), text
-    except Exception:
-        return text, text
+    result_text, _, _ = await call_llm(db, system=system, user=user, expect="text")
+    return result_text.strip(), text
 
 
 # ─── Boolean keyword parser ─────────────────────────────────────────────────
@@ -363,28 +361,29 @@ async def generate_queries_and_terms(
         "First identify any abbreviations, then generate search queries using full chemical names."
     )
 
-    # Phase B 마이그레이션 #10: strict_call(expect="schema", schema=ExpandedQuery).
-    # 폴백 try/except는 PLAN §B.3 지침대로 그대로 유지 (Phase C에서 fail-loud로 교체).
+    # Phase C: 폴백 제거. LLMError를 그대로 raise → 호출자 (SSE 스트림 또는 GET 엔드포인트)가
+    # PLAN §C.1에 따라 분기:
+    #   - SSE: warning 이벤트 emit + [keywords] 단일 쿼리로 진행
+    #   - GET: 글로벌 핸들러 → 503
     from services.llm import ExpandedQuery
     from services.llm.router import call_llm
 
-    try:
-        eq, _, _ = await call_llm(
-            db,
-            system=system,
-            user=user,
-            expect="schema",
-            schema=ExpandedQuery,
-        )
-        queries = eq.queries[:8]
-        terms = eq.must_contain_terms[:6]
-        expanded = eq.expanded_terms or ""
-        if queries:
-            return queries, terms, expanded
-    except Exception:
-        pass
+    eq, _, _ = await call_llm(
+        db,
+        system=system,
+        user=user,
+        expect="schema",
+        schema=ExpandedQuery,
+    )
+    queries = eq.queries[:8]
+    terms = eq.must_contain_terms[:6]
+    expanded = eq.expanded_terms or ""
+    if not queries:
+        # schema가 min_length=1이지만 만약을 대비
+        from services.llm.exceptions import LLMSchemaError
 
-    return [keywords], [], ""
+        raise LLMSchemaError("ExpandedQuery.queries 비어있음")
+    return queries, terms, expanded
 
 
 # ─── Step B: AI batch relevance scoring with reasons ─────────────────────────
@@ -395,7 +394,9 @@ async def ai_score_papers(
     """
     논문 배치를 AI에게 보내 관련도 0~10 점수 + 이유 평가.
     반환: (high_relevance [score >= THRESHOLD], low_relevance)
-    AI 실패 시 전체를 high_relevance로 반환 (graceful fallback).
+
+    Phase C: 폴백 제거. AI 실패 시 LLMError가 그대로 전파된다 →
+    SSE/엔드포인트가 503 에러로 변환. **임의로 high 버킷에 넣지 않는다.**
     """
     if not papers:
         return [], []
@@ -426,45 +427,57 @@ async def ai_score_papers(
         "Return relevance scores with reasons for each paper."
     )
 
-    # Phase B 마이그레이션 #11: strict_call(expect="json"). 폴백 try/except 유지.
+    # Phase C: 폴백 제거. call_llm이 raise하면 그대로 전파.
     # NOTE: PLAN은 expect="schema", schema=list[ScoredPaper]를 명시했지만, 기존 prompt가
-    # 루트 배열을 요구하고 Ollama format은 객체 루트만 받는다. expect="json"으로 유연하게
-    # 받고, ScoredPaper 검증은 dict 단위로 수행한다 (Phase C에서 ScoredPaperList 강제).
+    # 루트 배열을 요구하고 Ollama format은 객체 루트만 받는다. expect="json"으로 받고
+    # 호출부에서 명시적으로 ScoredPaper 검증 (deviation #4 후처리).
+    from services.llm import ScoredPaper
     from services.llm.router import call_llm
+    from services.llm.exceptions import LLMSchemaError
+    from pydantic import ValidationError
 
-    try:
-        scores, _, _ = await call_llm(
-            db,
-            system=system,
-            user=user,
-            expect="json",
+    scores, _, _ = await call_llm(
+        db,
+        system=system,
+        user=user,
+        expect="json",
+    )
+    # 응답이 dict인 경우 "scores" 키 우선 시도 (Ollama format=json은 dict 루트를 강제)
+    if isinstance(scores, dict):
+        scores = scores.get("scores", scores.get("results", []))
+    if not isinstance(scores, list):
+        raise LLMSchemaError(
+            f"ai_score_papers: 응답이 list 또는 {{scores:[...]}}가 아님 (type={type(scores).__name__})"
         )
-        # 응답이 dict인 경우 "scores" 키 우선 시도 (Ollama format=json은 dict 루트를 강제)
-        if isinstance(scores, dict):
-            scores = scores.get("scores", scores.get("results", []))
-        score_map = {}
-        reason_map = {}
-        for item in scores or []:
-            if isinstance(item, dict) and "id" in item and "score" in item:
-                score_map[item["id"]] = item["score"]
-                reason_map[item["id"]] = item.get("reason", "")
 
-        for i, paper in enumerate(papers):
-            paper["relevance_score"] = score_map.get(i)
-            paper["relevance_reason"] = reason_map.get(i, "")
+    score_map: dict[int, float] = {}
+    reason_map: dict[int, str] = {}
+    for raw in scores:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            sp = ScoredPaper.model_validate(raw)
+        except ValidationError:
+            # 개별 항목이 schema에 맞지 않으면 무시 (전체 실패는 아님)
+            continue
+        score_map[sp.id] = sp.score
+        reason_map[sp.id] = sp.reason
 
-        high = [p for p in papers if (p.get("relevance_score") or 0) >= RELEVANCE_THRESHOLD]
-        low = [p for p in papers if (p.get("relevance_score") or 0) < RELEVANCE_THRESHOLD]
-        # high 내부도 relevance_score 내림차순 → 같은 점수면 인용수
-        high.sort(key=lambda x: (x.get("relevance_score") or 0, x.get("citation_count") or 0), reverse=True)
-        return high, low
+    if not score_map:
+        # 모든 항목이 검증 실패 → 전체 실패로 간주
+        raise LLMSchemaError(
+            "ai_score_papers: ScoredPaper 검증을 통과한 항목이 없음"
+        )
 
-    except Exception:
-        # fallback: 스코어링 실패 시 전체 반환
-        for p in papers:
-            p["relevance_score"] = None
-            p["relevance_reason"] = None
-        return papers, []
+    for i, paper in enumerate(papers):
+        paper["relevance_score"] = score_map.get(i)
+        paper["relevance_reason"] = reason_map.get(i, "")
+
+    high = [p for p in papers if (p.get("relevance_score") or 0) >= RELEVANCE_THRESHOLD]
+    low = [p for p in papers if (p.get("relevance_score") or 0) < RELEVANCE_THRESHOLD]
+    # high 내부도 relevance_score 내림차순 → 같은 점수면 인용수
+    high.sort(key=lambda x: (x.get("relevance_score") or 0, x.get("citation_count") or 0), reverse=True)
+    return high, low
 
 
 # ─── Original simple search (with pagination & advanced filters) ─────────────
@@ -659,9 +672,29 @@ async def ai_search_stream(request: AiSearchRequest):
                 })
             else:
                 yield sse({"phase": "generating", "message": "AI가 다각도 검색 전략 수립 중..."})
-                queries, must_contain_terms, expanded_terms = await generate_queries_and_terms(
-                    search_keywords, db, num_queries=5
-                )
+                # Phase C: 쿼리 확장 실패는 warning으로 강등 — 단일 키워드로 진행하되
+                # 사용자가 노란 배너로 인지할 수 있도록 명시적 warning 이벤트를 emit한다.
+                # (PLAN §C.1: 200 + warning yellow banner)
+                from services.llm.exceptions import LLMError as _LLMErrorExp
+
+                expand_warning_code: Optional[str] = None
+                try:
+                    queries, must_contain_terms, expanded_terms = await generate_queries_and_terms(
+                        search_keywords, db, num_queries=5
+                    )
+                except _LLMErrorExp as exp_err:
+                    expand_warning_code = "ai_expand_failed"
+                    queries = [search_keywords]
+                    must_contain_terms = []
+                    expanded_terms = ""
+                    yield sse({
+                        "phase": "warning",
+                        "warning": expand_warning_code,
+                        "message": (
+                            "AI 쿼리 확장 실패. 단일 키워드로만 검색됩니다. "
+                            f"({type(exp_err).__name__}: {exp_err})"
+                        ),
+                    })
 
                 # 동의어 확장 쿼리 추가 (중복 제거)
                 existing_lower = {q.lower() for q in queries}
@@ -839,7 +872,31 @@ async def ai_search_stream(request: AiSearchRequest):
             })
 
         except Exception as e:
-            yield sse({"phase": "error", "message": str(e)})
+            # Phase C: LLMError는 fail-loud로 사용자 가시 코드를 함께 전달.
+            from services.llm.exceptions import (
+                LLMError as _LLMError,
+                LLMTimeoutError as _LLMTimeout,
+                LLMSchemaError as _LLMSchema,
+                LLMUpstreamError as _LLMUpstream,
+            )
+
+            if isinstance(e, _LLMError):
+                if isinstance(e, _LLMTimeout):
+                    code = "ai_timeout"
+                elif isinstance(e, _LLMSchema):
+                    code = "ai_schema_invalid"
+                elif isinstance(e, _LLMUpstream):
+                    code = "ai_upstream_unavailable"
+                else:
+                    code = "ai_unavailable"
+                yield sse({
+                    "phase": "error",
+                    "error": code,
+                    "status": 503,
+                    "message": str(e),
+                })
+            else:
+                yield sse({"phase": "error", "message": str(e)})
         finally:
             db.close()
 

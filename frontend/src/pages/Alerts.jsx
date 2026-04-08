@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import toast from 'react-hot-toast'
 import { alertsAPI, papersAPI } from '../api/client.js'
+import { FAILURE_REASON_LABELS } from '../components/Common/StatusBadge.jsx'
 
 const SUB_TYPES = [
   { value: 'keyword', label: '키워드' },
@@ -47,6 +48,9 @@ export default function Alerts() {
   const [alertsLoading, setAlertsLoading] = useState(true)
   const [selectedSubId, setSelectedSubId] = useState(null)
   const [filterRead, setFilterRead] = useState('unread') // 'all' | 'unread' | 'read'
+  // Phase C: 'all' | 'normal' | 'ai_failed' — AI 실패 탭 분리
+  const [filterTab, setFilterTab] = useState('all')
+  const [counters, setCounters] = useState({ unread: 0, ai_failed: 0, ai_failed_unread: 0 })
   const [savingPaper, setSavingPaper] = useState({})
 
   const loadSubscriptions = useCallback(async () => {
@@ -68,6 +72,9 @@ export default function Alerts() {
       if (selectedSubId) params.subscription_id = selectedSubId
       if (filterRead === 'unread') params.is_read = false
       else if (filterRead === 'read') params.is_read = true
+      // Phase C: AI 실패 탭 — 백엔드 is_ai_failed 필터 활용
+      if (filterTab === 'ai_failed') params.is_ai_failed = true
+      else if (filterTab === 'normal') params.is_ai_failed = false
       const res = await alertsAPI.getAlerts(params)
       setAlerts(res.data)
     } catch {
@@ -75,10 +82,24 @@ export default function Alerts() {
     } finally {
       setAlertsLoading(false)
     }
-  }, [selectedSubId, filterRead])
+  }, [selectedSubId, filterRead, filterTab])
+
+  const loadCounters = useCallback(async () => {
+    try {
+      const res = await alertsAPI.getAlertCount()
+      setCounters({
+        unread: res.data.unread || 0,
+        ai_failed: res.data.ai_failed || 0,
+        ai_failed_unread: res.data.ai_failed_unread || 0,
+      })
+    } catch {
+      // 카운터 로드 실패는 조용히 무시 (메인 흐름 방해 금지)
+    }
+  }, [])
 
   useEffect(() => { loadSubscriptions() }, [loadSubscriptions])
   useEffect(() => { loadAlerts() }, [loadAlerts])
+  useEffect(() => { loadCounters() }, [loadCounters, alerts.length])
 
   const handleCreateSub = async (e) => {
     e.preventDefault()
@@ -363,6 +384,54 @@ export default function Alerts() {
         {/* 오른쪽: 알림 피드 */}
         <div style={{ flex: 1 }}>
           <div className="card">
+            {/* Phase C: AI 실패 탭 분리 */}
+            <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
+              {[
+                { key: 'all', label: '전체', count: null },
+                { key: 'normal', label: '정상', count: null },
+                {
+                  key: 'ai_failed',
+                  label: 'AI 실패',
+                  count: counters.ai_failed,
+                  emphasize: counters.ai_failed_unread > 0,
+                },
+              ].map((tab) => (
+                <button
+                  key={tab.key}
+                  className="btn btn-sm"
+                  onClick={() => setFilterTab(tab.key)}
+                  style={{
+                    fontSize: 12,
+                    padding: '4px 12px',
+                    background:
+                      filterTab === tab.key ? 'var(--accent)' : 'transparent',
+                    color:
+                      filterTab === tab.key ? '#fff' : 'var(--text-secondary)',
+                    border: '1px solid var(--border, #2a2d3a)',
+                  }}
+                >
+                  {tab.label}
+                  {tab.count != null && tab.count > 0 && (
+                    <span
+                      style={{
+                        marginLeft: 6,
+                        fontSize: 11,
+                        padding: '1px 6px',
+                        borderRadius: 9,
+                        background:
+                          tab.emphasize && filterTab !== tab.key
+                            ? 'var(--danger, #d23f3f)'
+                            : 'rgba(255,255,255,0.18)',
+                        color: '#fff',
+                      }}
+                    >
+                      {tab.count}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
               <div className="card-title" style={{ marginBottom: 0 }}>
                 알림 피드
@@ -454,7 +523,43 @@ export default function Alerts() {
                               관련도 {alert.relevance_score.toFixed(1)}
                             </span>
                           )}
+                          {/* Phase C: AI 실패 배지 */}
+                          {alert.is_ai_failed && (
+                            <span
+                              style={{
+                                color: '#fff',
+                                background: 'var(--danger, #d23f3f)',
+                                padding: '1px 8px',
+                                borderRadius: 10,
+                                fontSize: 11,
+                                fontWeight: 600,
+                              }}
+                              title={alert.ai_failure_detail || ''}
+                            >
+                              AI 실패 ·{' '}
+                              {FAILURE_REASON_LABELS[alert.ai_failure_reason] ||
+                                alert.ai_failure_reason ||
+                                '원인 불명'}
+                            </span>
+                          )}
                         </div>
+                        {alert.is_ai_failed && alert.ai_failure_detail && (
+                          <div
+                            style={{
+                              fontSize: 11,
+                              color: 'var(--text-secondary)',
+                              fontFamily: 'monospace',
+                              marginBottom: 4,
+                              padding: '4px 8px',
+                              background: 'rgba(210, 63, 63, 0.08)',
+                              borderRadius: 4,
+                              border: '1px solid rgba(210, 63, 63, 0.25)',
+                              wordBreak: 'break-word',
+                            }}
+                          >
+                            {alert.ai_failure_detail}
+                          </div>
+                        )}
 
                         <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
                           {formatDate(alert.created_at)}

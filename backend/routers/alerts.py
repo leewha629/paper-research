@@ -1,4 +1,5 @@
 import json
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
@@ -9,8 +10,34 @@ from database import get_db
 from models import Subscription, Alert, AppSetting
 from s2_client import S2Client
 from ai_client import AIClient
+from services.llm.exceptions import (
+    LLMError,
+    LLMTimeoutError,
+    LLMSchemaError,
+    LLMUpstreamError,
+)
+
+logger = logging.getLogger("paper_research.alerts")
 
 router = APIRouter(tags=["alerts"])
+
+
+def _classify_llm_error(exc: BaseException) -> str:
+    """LLMError 계열을 enum-like 짧은 reason 코드로 분류 (집계용)."""
+    if isinstance(exc, LLMTimeoutError):
+        return "timeout"
+    if isinstance(exc, LLMSchemaError):
+        return "schema_invalid"
+    if isinstance(exc, LLMUpstreamError):
+        # Ollama 미기동(ConnectError) → upstream으로 매핑되지만, 메시지에 connect가
+        # 보이면 "ollama_down"으로 더 구체화.
+        msg = (str(exc) or "").lower()
+        if "connect" in msg or "connection" in msg or "11434" in msg:
+            return "ollama_down"
+        return "upstream_5xx"
+    if isinstance(exc, LLMError):
+        return "unknown"
+    return "unknown"
 
 
 # --- 구독 ---
@@ -109,15 +136,22 @@ async def toggle_subscription(id: int, db: Session = Depends(get_db)):
 async def list_alerts(
     subscription_id: Optional[int] = None,
     is_read: Optional[bool] = None,
+    is_ai_failed: Optional[bool] = None,
     db: Session = Depends(get_db),
 ):
-    """알림 목록 (미읽은 것 우선)"""
+    """알림 목록 (미읽은 것 우선).
+
+    Phase C: is_ai_failed 필터 추가. UI '전체' / 'AI 실패' 탭 분리에 사용.
+    기본값(None)은 전체. is_ai_failed=False면 정상 알림만, True면 실패만.
+    """
     query = db.query(Alert)
 
     if subscription_id is not None:
         query = query.filter(Alert.subscription_id == subscription_id)
     if is_read is not None:
         query = query.filter(Alert.is_read == is_read)
+    if is_ai_failed is not None:
+        query = query.filter(Alert.is_ai_failed == is_ai_failed)
 
     # 미읽은 것 우선, 최신순
     alerts = query.order_by(Alert.is_read.asc(), Alert.created_at.desc()).all()
@@ -132,6 +166,9 @@ async def list_alerts(
             "venue": a.venue,
             "relevance_score": a.relevance_score,
             "is_read": a.is_read,
+            "is_ai_failed": a.is_ai_failed,
+            "ai_failure_reason": a.ai_failure_reason,
+            "ai_failure_detail": a.ai_failure_detail,
             "created_at": a.created_at.isoformat(),
         }
         for a in alerts
@@ -140,9 +177,22 @@ async def list_alerts(
 
 @router.get("/alerts/count")
 async def alert_count(db: Session = Depends(get_db)):
-    """미읽은 알림 수"""
+    """미읽은 알림 수 + AI 실패 카운터.
+
+    Phase C: 'AI 실패' 탭 카운터를 위해 ai_failed 필드 추가.
+    """
     unread = db.query(Alert).filter(Alert.is_read == False).count()
-    return {"unread": unread}
+    ai_failed = db.query(Alert).filter(Alert.is_ai_failed == True).count()
+    ai_failed_unread = (
+        db.query(Alert)
+        .filter(Alert.is_ai_failed == True, Alert.is_read == False)
+        .count()
+    )
+    return {
+        "unread": unread,
+        "ai_failed": ai_failed,
+        "ai_failed_unread": ai_failed_unread,
+    }
 
 
 @router.put("/alerts/{id}/read")
@@ -222,25 +272,39 @@ async def check_alerts(db: Session = Depends(get_db)):
             new_papers = [p for p in papers if p.get("paperId") and p["paperId"] not in existing_s2_ids]
 
             # AI로 관련성 점수 매기기 & 알림 생성
+            # Phase C: 5.0 하드코딩 폴백 제거. AI 실패 시 별도 실패 레코드(is_ai_failed=True)로
+            # 저장 → 사용자가 "AI 실패" 탭에서 즉시 인지.
             for p in new_papers[:10]:  # 한 번에 최대 10개
+                authors_json = json.dumps(p.get("authors") or [], ensure_ascii=False)
                 try:
                     score = await _score_relevance(ai, sub, p)
-                    if score >= threshold:
-                        authors_json = json.dumps(p.get("authors") or [], ensure_ascii=False)
-                        alert = Alert(
-                            subscription_id=sub.id,
-                            paper_id_s2=p["paperId"],
-                            title=p.get("title", "제목 없음"),
-                            authors_json=authors_json,
-                            year=p.get("year"),
-                            venue=p.get("venue"),
-                            relevance_score=score,
-                        )
-                        db.add(alert)
-                        total_new += 1
-                except Exception:
-                    # AI 스코어링 실패 시 기본 점수로 추가
-                    authors_json = json.dumps(p.get("authors") or [], ensure_ascii=False)
+                except LLMError as llm_err:
+                    reason = _classify_llm_error(llm_err)
+                    detail = str(llm_err)[:500]
+                    logger.error(
+                        "Alert score failed sub_id=%s paper=%s reason=%s detail=%s",
+                        sub.id,
+                        p.get("paperId"),
+                        reason,
+                        detail,
+                    )
+                    failure_alert = Alert(
+                        subscription_id=sub.id,
+                        paper_id_s2=p["paperId"],
+                        title=p.get("title", "제목 없음"),
+                        authors_json=authors_json,
+                        year=p.get("year"),
+                        venue=p.get("venue"),
+                        relevance_score=None,
+                        is_ai_failed=True,
+                        ai_failure_reason=reason,
+                        ai_failure_detail=detail,
+                    )
+                    db.add(failure_alert)
+                    total_new += 1
+                    continue
+
+                if score >= threshold:
                     alert = Alert(
                         subscription_id=sub.id,
                         paper_id_s2=p["paperId"],
@@ -248,7 +312,8 @@ async def check_alerts(db: Session = Depends(get_db)):
                         authors_json=authors_json,
                         year=p.get("year"),
                         venue=p.get("venue"),
-                        relevance_score=5.0,
+                        relevance_score=score,
+                        is_ai_failed=False,
                     )
                     db.add(alert)
                     total_new += 1
@@ -264,8 +329,17 @@ async def check_alerts(db: Session = Depends(get_db)):
 
 
 async def _score_relevance(ai: AIClient, sub: Subscription, paper: dict) -> float:
-    """AI를 사용하여 논문의 구독 관련성 점수 계산 (1~10)"""
-    system = "당신은 학술 논문 관련성 평가 전문가입니다. 구독 조건과 논문 정보를 비교하여 1~10 점수를 매기세요. 숫자만 답하세요."
+    """AI를 사용하여 논문의 구독 관련성 점수 계산 (0~10).
+
+    Phase C: strict_call(expect="schema", schema=RelevanceScore)로 전환.
+    정규식 폴백 제거. 실패 시 LLMError가 그대로 raise되며, 호출자는 Alert을
+    만들지 않고 별도 실패 레코드(is_ai_failed=True)를 저장한다.
+    """
+    system = (
+        "당신은 학술 논문 관련성 평가 전문가입니다. "
+        "구독 조건과 논문 정보를 비교하여 0~10 점수와 한 줄 이유를 JSON으로 반환하세요. "
+        '응답 형식 예: {"score": 8, "reason": "구독 키워드와 직접 일치"}.'
+    )
     user_msg = f"""구독 유형: {sub.sub_type}
 구독 쿼리: {sub.query}
 {f'구독 레이블: {sub.label}' if sub.label else ''}
@@ -276,12 +350,16 @@ async def _score_relevance(ai: AIClient, sub: Subscription, paper: dict) -> floa
 학술지: {paper.get('venue', '')}
 초록: {(paper.get('abstract') or '')[:500]}
 
-이 논문이 구독 조건에 얼마나 관련이 있나요? (1~10 점수만 답하세요)"""
+이 논문이 구독 조건에 얼마나 관련이 있나요? JSON으로만 답하세요."""
 
-    result_text, _, _ = await ai.complete(system, user_msg)
-    # 숫자만 추출
-    import re
-    match = re.search(r"(\d+\.?\d*)", result_text.strip())
-    if match:
-        return min(float(match.group(1)), 10.0)
-    return 5.0
+    from services.llm import RelevanceScore
+    from services.llm.router import call_llm
+
+    rs, _, _ = await call_llm(
+        ai.db,
+        system=system,
+        user=user_msg,
+        expect="schema",
+        schema=RelevanceScore,
+    )
+    return min(float(rs.score), 10.0)
