@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from database import SessionLocal
@@ -41,12 +42,27 @@ class ProjectHandles:
 
 
 def _ensure_collection(db: Session, name: str) -> Collection:
+    """ACID-safe upsert: SELECT → INSERT → IntegrityError 폴백 SELECT.
+
+    동시에 두 워커가 같은 collection을 만들려 할 때 한 쪽이 IntegrityError를 받고
+    다른 쪽이 만든 row를 SELECT로 복구한다 (Phase E §3).
+    """
     col = db.query(Collection).filter(Collection.name == name).first()
-    if col is None:
+    if col is not None:
+        return col
+
+    sp = db.begin_nested()  # savepoint
+    try:
         col = Collection(name=name, description=f"자율 연구 에이전트 프로젝트 ({name})")
         db.add(col)
-        db.flush()
-    return col
+        sp.commit()
+        return col
+    except IntegrityError:
+        sp.rollback()
+        col = db.query(Collection).filter(Collection.name == name).first()
+        if col is None:
+            raise
+        return col
 
 
 def _ensure_folder(
@@ -56,21 +72,40 @@ def _ensure_folder(
     parent_id: int | None,
     is_system: bool,
 ) -> Folder:
+    """ACID-safe upsert (Phase E §3). UNIQUE(parent_id, name) 의존."""
     q = db.query(Folder).filter(Folder.name == name)
     if parent_id is None:
         q = q.filter(Folder.parent_id.is_(None))
     else:
         q = q.filter(Folder.parent_id == parent_id)
     f = q.first()
-    if f is None:
+    if f is not None:
+        return f
+
+    sp = db.begin_nested()
+    try:
         f = Folder(name=name, parent_id=parent_id, is_system_folder=is_system)
         db.add(f)
-        db.flush()
-    return f
+        sp.commit()
+        return f
+    except IntegrityError:
+        sp.rollback()
+        q = db.query(Folder).filter(Folder.name == name)
+        if parent_id is None:
+            q = q.filter(Folder.parent_id.is_(None))
+        else:
+            q = q.filter(Folder.parent_id == parent_id)
+        f = q.first()
+        if f is None:
+            raise
+        return f
 
 
 def bootstrap_project(name: str, topic: str) -> ProjectHandles:
-    """legacy DB에 컬렉션/폴더 트리를 멱등하게 시드하고 핸들 반환."""
+    """legacy DB에 컬렉션/폴더 트리를 멱등하게 시드하고 핸들 반환.
+
+    Phase E §3: ACID 보강 — IntegrityError 폴백 패턴으로 동시 호출 안전.
+    """
     db = SessionLocal()
     try:
         col = _ensure_collection(db, name)

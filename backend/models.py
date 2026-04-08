@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, ForeignKey, Float
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, ForeignKey, Float, UniqueConstraint
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from database import Base
@@ -94,6 +94,10 @@ class PaperTag(Base):
 
 class Folder(Base):
     __tablename__ = "folders"
+    # Phase E §3: bootstrap 멱등 보장 — 같은 부모 아래에 같은 이름 폴더 중복 금지.
+    __table_args__ = (
+        UniqueConstraint("parent_id", "name", name="uq_folders_parent_name"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
@@ -108,6 +112,12 @@ class Folder(Base):
 
 class FolderPaper(Base):
     __tablename__ = "folder_papers"
+    # Phase E §4: paper 99 사고 재발 방지 — 같은 (folder_id, paper_id) 쌍 중복 금지.
+    # 시스템 폴더 ↔ 사용자 폴더 동시 매핑은 허용 (recalibrate.py 가정 유지).
+    # 시스템 폴더 간 중복은 discovery.py move semantics + 마이그레이션 003 cleanup이 보장.
+    __table_args__ = (
+        UniqueConstraint("folder_id", "paper_id", name="uq_folder_papers_folder_paper"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     folder_id = Column(Integer, ForeignKey("folders.id"), nullable=False)
@@ -271,6 +281,11 @@ class AgentRun(Base):
     error = Column(Text, nullable=True)
     duration_seconds = Column(Float, nullable=True)
     decisions_json = Column(Text, nullable=True)         # 결정 상세 (JSON)
+
+    # --- Phase E (Migration 003): heartbeat ---
+    # 30s마다 갱신되는 liveness 신호. 사이클이 죽었는지 UI에서 판단할 때 사용.
+    heartbeat_at = Column(DateTime, nullable=True)
+    locked_by = Column(String, nullable=True)            # "<hostname>:<pid>"
 
 
 class SearchedKeyword(Base):

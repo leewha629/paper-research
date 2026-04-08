@@ -11,13 +11,17 @@ legacy data/papers.db 의 papers / paper_collections / folder_papers / agent_run
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import os
+import socket
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from database import SessionLocal
@@ -43,6 +47,9 @@ logger = logging.getLogger(__name__)
 TRASH_MAX = 3
 HOLD_SCORE = 4
 AUTO_MAX = 6
+
+# Phase E §2: heartbeat 갱신 주기 (초)
+HEARTBEAT_INTERVAL_SECONDS = 30
 
 
 def _classify(score: int) -> str:
@@ -141,6 +148,35 @@ def _record_keywords(db: Session, keywords: List[str]) -> None:
             )
 
 
+def _locked_by_label() -> str:
+    """heartbeat 메타: hostname:pid."""
+    try:
+        host = socket.gethostname()
+    except Exception:
+        host = "unknown"
+    return f"{host}:{os.getpid()}"
+
+
+async def _heartbeat_loop(db_factory, run_id: int) -> None:
+    """30s마다 AgentRun.heartbeat_at 갱신. 사이클 종료 시 cancel."""
+    try:
+        while True:
+            await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
+            try:
+                hb_db = db_factory()
+                try:
+                    row = hb_db.query(AgentRun).filter(AgentRun.id == run_id).first()
+                    if row is not None:
+                        row.heartbeat_at = datetime.utcnow()
+                        hb_db.commit()
+                finally:
+                    hb_db.close()
+            except Exception as e:  # heartbeat 실패는 사이클을 죽이지 않는다
+                logger.warning(f"heartbeat 갱신 실패 (run_id={run_id}): {e}")
+    except asyncio.CancelledError:
+        return
+
+
 async def run_discovery_cycle(
     project_name: str,
     topic: str,
@@ -149,7 +185,11 @@ async def run_discovery_cycle(
     max_candidates: int = 60,
     dry_run: bool = False,
 ) -> DiscoveryReport:
-    """1 사이클 실행. 부트스트랩 + 검색 + 평가 + 저장 + 로그."""
+    """1 사이클 실행. 부트스트랩 + 검색 + 평가 + 저장 + 로그.
+
+    Phase E §2: 사이클 시작 시 AgentRun INSERT, 30s마다 heartbeat 갱신,
+    종료 시 task cancel + 마지막 heartbeat 기록.
+    """
     handles: ProjectHandles = bootstrap_project(project_name, topic)
 
     report = DiscoveryReport(
@@ -159,6 +199,25 @@ async def run_discovery_cycle(
         is_dry_run=dry_run,
     )
     t0 = time.time()
+
+    # ─── heartbeat: 사이클 시작 시 INSERT ──────────────────────────────
+    locked_by = _locked_by_label()
+    init_db = SessionLocal()
+    try:
+        initial_run = AgentRun(
+            started_at=report.started_at,
+            topic_snapshot=topic,
+            is_dry_run=bool(dry_run),
+            heartbeat_at=report.started_at,
+            locked_by=locked_by,
+        )
+        init_db.add(initial_run)
+        init_db.commit()
+        run_id = initial_run.id
+    finally:
+        init_db.close()
+
+    heartbeat_task = asyncio.create_task(_heartbeat_loop(SessionLocal, run_id))
 
     db = SessionLocal()
     try:
@@ -176,7 +235,7 @@ async def run_discovery_cycle(
         if not keywords:
             report.finished_at = datetime.utcnow()
             report.duration_seconds = time.time() - t0
-            _persist_run(db, report)
+            _persist_run(db, report, run_id=run_id)
             return report
 
         # 2) S2 검색
@@ -242,45 +301,66 @@ async def run_discovery_cycle(
             if dry_run:
                 continue
 
-            paper = Paper(
-                paper_id=cand["paper_id"],
-                title=cand["title"],
-                authors_json=cand["authors_json"],
-                year=cand["year"],
-                venue=cand["venue"],
-                abstract=cand["abstract"],
-                doi=cand["doi"],
-                citation_count=cand["citation_count"],
-                reference_count=cand["reference_count"],
-                is_open_access=cand["is_open_access"],
-                pdf_url=cand["pdf_url"],
-                external_ids_json=cand["external_ids_json"],
-                fields_of_study_json=cand["fields_of_study_json"],
-                discovered_by="agent",
-                relevance_score=score,
-                relevance_reason=reason,
-                relevance_checked_at=datetime.utcnow(),
-                is_trashed=(bucket == "휴지통"),
-                trashed_at=(datetime.utcnow() if bucket == "휴지통" else None),
-                trash_reason=("low_relevance" if bucket == "휴지통" else None),
-            )
-            db.add(paper)
-            db.flush()  # paper.id 확보
+            # Phase E §5: paper / paper_collections / folder_papers 저장을
+            # 단일 savepoint로 묶어 부분 실패 시 원자적 롤백.
+            sp = db.begin_nested()
+            try:
+                paper = Paper(
+                    paper_id=cand["paper_id"],
+                    title=cand["title"],
+                    authors_json=cand["authors_json"],
+                    year=cand["year"],
+                    venue=cand["venue"],
+                    abstract=cand["abstract"],
+                    doi=cand["doi"],
+                    citation_count=cand["citation_count"],
+                    reference_count=cand["reference_count"],
+                    is_open_access=cand["is_open_access"],
+                    pdf_url=cand["pdf_url"],
+                    external_ids_json=cand["external_ids_json"],
+                    fields_of_study_json=cand["fields_of_study_json"],
+                    discovered_by="agent",
+                    relevance_score=score,
+                    relevance_reason=reason,
+                    relevance_checked_at=datetime.utcnow(),
+                    is_trashed=(bucket == "휴지통"),
+                    trashed_at=(datetime.utcnow() if bucket == "휴지통" else None),
+                    trash_reason=("low_relevance" if bucket == "휴지통" else None),
+                )
+                db.add(paper)
+                db.flush()  # paper.id 확보
 
-            # 컬렉션 (CF4) 매핑
-            db.add(
-                PaperCollection(
-                    paper_id=paper.id,
-                    collection_id=handles.collection_id,
+                # 컬렉션 (CF4) 매핑
+                db.add(
+                    PaperCollection(
+                        paper_id=paper.id,
+                        collection_id=handles.collection_id,
+                    )
                 )
-            )
-            # 분류 폴더 매핑
-            db.add(
-                FolderPaper(
-                    folder_id=handles.folder_ids[bucket],
-                    paper_id=paper.id,
+
+                # Phase E §4: 분류 폴더 매핑 — move semantics.
+                # 시스템 폴더 4종 중 기존 매핑이 있으면 DELETE 후 새로 INSERT.
+                # 사용자 폴더는 건드리지 않는다.
+                system_folder_ids = list(handles.folder_ids.values())
+                db.query(FolderPaper).filter(
+                    FolderPaper.paper_id == paper.id,
+                    FolderPaper.folder_id.in_(system_folder_ids),
+                ).delete(synchronize_session=False)
+                db.add(
+                    FolderPaper(
+                        folder_id=handles.folder_ids[bucket],
+                        paper_id=paper.id,
+                    )
                 )
-            )
+                sp.commit()
+            except (IntegrityError, Exception) as e:
+                sp.rollback()
+                logger.error(
+                    f"[discovery:{project_name}] 저장 실패 paper_id={cand['paper_id']}: {e}"
+                )
+                report.errors.append(
+                    f"save 실패 ({cand['paper_id']}): {str(e)[:120]}"
+                )
 
         # 5) 키워드 기록 + 커밋
         if not dry_run:
@@ -290,29 +370,50 @@ async def run_discovery_cycle(
         report.finished_at = datetime.utcnow()
         report.duration_seconds = time.time() - t0
 
-        _persist_run(db, report)
+        _persist_run(db, report, run_id=run_id)
         return report
     finally:
         db.close()
+        # heartbeat task 정리 (예외/정상 종료 어느 경우든)
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        # 마지막 heartbeat 기록
+        try:
+            final_db = SessionLocal()
+            try:
+                row = final_db.query(AgentRun).filter(AgentRun.id == run_id).first()
+                if row is not None:
+                    row.heartbeat_at = datetime.utcnow()
+                    final_db.commit()
+            finally:
+                final_db.close()
+        except Exception as e:
+            logger.warning(f"마지막 heartbeat 기록 실패: {e}")
 
 
-def _persist_run(db: Session, report: DiscoveryReport) -> None:
-    run = AgentRun(
-        started_at=report.started_at,
-        finished_at=report.finished_at or datetime.utcnow(),
-        topic_snapshot=report.topic,
-        keywords_used=json.dumps(report.keywords_used, ensure_ascii=False),
-        candidates_fetched=report.candidates_fetched,
-        new_papers=report.new_papers,
-        saved_papers=report.auto_saved + report.recommended + report.holding,
-        trashed_papers=report.trashed,
-        recommended_papers=report.recommended,
-        is_dry_run=bool(report.is_dry_run),
-        error="\n".join(report.errors) if report.errors else None,
-        duration_seconds=report.duration_seconds,
-        decisions_json=json.dumps(report.decisions, ensure_ascii=False),
-    )
-    db.add(run)
+def _persist_run(db: Session, report: DiscoveryReport, *, run_id: int) -> None:
+    """사이클 시작 시 INSERT한 AgentRun을 종료 메타로 UPDATE."""
+    run = db.query(AgentRun).filter(AgentRun.id == run_id).first()
+    if run is None:
+        # 비정상 — 시작 row가 사라졌다. 새로 INSERT 폴백.
+        run = AgentRun(started_at=report.started_at)
+        db.add(run)
+    run.finished_at = report.finished_at or datetime.utcnow()
+    run.topic_snapshot = report.topic
+    run.keywords_used = json.dumps(report.keywords_used, ensure_ascii=False)
+    run.candidates_fetched = report.candidates_fetched
+    run.new_papers = report.new_papers
+    run.saved_papers = report.auto_saved + report.recommended + report.holding
+    run.trashed_papers = report.trashed
+    run.recommended_papers = report.recommended
+    run.is_dry_run = bool(report.is_dry_run)
+    run.error = "\n".join(report.errors) if report.errors else None
+    run.duration_seconds = report.duration_seconds
+    run.decisions_json = json.dumps(report.decisions, ensure_ascii=False)
+    run.heartbeat_at = datetime.utcnow()
     try:
         db.commit()
     except Exception as e:

@@ -12,13 +12,11 @@ from models import (
     Paper, Collection, Tag, Folder, PaperTag,
     Alert, SearchHistory, AgentRun,
 )
+from services.discovery_lock import discovery_lock, LockedError, lock_path_for
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 logger = logging.getLogger(__name__)
-
-# Discovery 사이클 동시 실행 방지 (간단한 in-process flag)
-_discovery_running: dict[str, bool] = {}
 
 
 @router.get("/stats")
@@ -101,7 +99,8 @@ async def get_dashboard_stats(db: Session = Depends(get_db)):
         }
 
     return {
-        "agent_running": any(_discovery_running.values()),
+        # Phase E: 락 파일 기반으로 판정. 외부 폴링이 잦지 않으므로 비용 OK.
+        "agent_running": bool(_running_tasks),
         "agent_run_total": agent_total,
         "agent_last_run": last_run_dict,
         "total_papers": total_papers,
@@ -129,27 +128,32 @@ DEFAULT_AGENT_PROJECT = "CF4"
 DEFAULT_AGENT_TOPIC = "CF4 분해 촉매와 반응 메커니즘 연구"
 
 
-async def _run_discovery_async(project: str, topic: str, max_candidates: int):
-    """백그라운드에서 1 사이클 실행."""
+async def _run_discovery_with_lock(project: str, topic: str, max_candidates: int):
+    """asyncio task로 1 사이클 실행. Phase E §1: 락은 task 전체 수명 동안 유지."""
     from services.research_agent import run_discovery_cycle
 
-    _discovery_running[project] = True
     try:
-        report = await run_discovery_cycle(
-            project,
-            topic,
-            limit_per_query=10,
-            max_candidates=max_candidates,
-        )
-        logger.info(
-            f"[discovery] {project} 완료: candidates={report.candidates_fetched} "
-            f"new={report.new_papers} saved={report.auto_saved + report.recommended} "
-            f"trashed={report.trashed} duration={report.duration_seconds:.1f}s"
-        )
-    except Exception as e:
-        logger.exception(f"[discovery] {project} 실패: {e}")
-    finally:
-        _discovery_running[project] = False
+        with discovery_lock(project):
+            try:
+                report = await run_discovery_cycle(
+                    project,
+                    topic,
+                    limit_per_query=10,
+                    max_candidates=max_candidates,
+                )
+                logger.info(
+                    f"[discovery] {project} 완료: candidates={report.candidates_fetched} "
+                    f"new={report.new_papers} saved={report.auto_saved + report.recommended} "
+                    f"trashed={report.trashed} duration={report.duration_seconds:.1f}s"
+                )
+            except Exception as e:
+                logger.exception(f"[discovery] {project} 실패: {e}")
+    except LockedError:
+        logger.warning(f"[discovery] {project} 락 충돌, 사이클 건너뜀")
+
+
+# 백그라운드 task 핸들 보관 — GC 방지 (asyncio.create_task의 weak ref 이슈)
+_running_tasks: set[asyncio.Task] = set()
 
 
 @router.post("/agent/run")
@@ -169,13 +173,26 @@ async def trigger_agent_run(
     topic = body.get("topic") or DEFAULT_AGENT_TOPIC
     max_candidates = int(body.get("max_candidates") or 60)
 
-    if _discovery_running.get(project):
-        raise HTTPException(
-            status_code=409,
-            detail=f"이미 '{project}' 사이클이 실행 중입니다.",
-        )
+    # Phase E §1: 락 파일이 이미 잡혀있으면 즉시 409.
+    # 실제 락은 asyncio task 안에서 다시 잡으며, 거기서 task 전체 수명 동안 유지된다.
+    # 사전 체크가 통과한 직후 다른 요청이 끼어드는 race window는 락 파일 존재 자체가
+    # 아닌 fcntl flock 으로 보호되므로 두 task 중 하나만 실제 작업을 진행한다.
+    if lock_path_for(project).exists():
+        # 기존 메타가 남아있을 수 있으므로 실제 flock 시도로 확인
+        try:
+            with discovery_lock(project):
+                pass
+        except LockedError as e:
+            raise HTTPException(
+                status_code=409,
+                detail=f"이미 '{project}' 사이클이 실행 중입니다 (lock={e.lock_path}).",
+            )
 
-    background_tasks.add_task(_run_discovery_async, project, topic, max_candidates)
+    task = asyncio.create_task(
+        _run_discovery_with_lock(project, topic, max_candidates)
+    )
+    _running_tasks.add(task)
+    task.add_done_callback(_running_tasks.discard)
     return {
         "ok": True,
         "project": project,
@@ -190,8 +207,24 @@ async def trigger_agent_run(
 async def agent_status(db: Session = Depends(get_db)):
     """에이전트 실행 상태 + 최근 사이클 정보."""
     last_run = db.query(AgentRun).order_by(AgentRun.id.desc()).first()
+    # Phase E §2: 락 파일 기반 running 판정 (in-process flag 제거됨)
+    running: list[str] = []
+    try:
+        from pathlib import Path
+        lock_dir = Path(__file__).resolve().parent.parent.parent / "data"
+        if lock_dir.exists():
+            for p in lock_dir.glob("discovery_*.lock"):
+                # 락 시도 — 실패 시 누군가 잡고 있다
+                try:
+                    with discovery_lock(p.stem.replace("discovery_", "")):
+                        pass
+                except LockedError:
+                    running.append(p.stem.replace("discovery_", ""))
+    except Exception:
+        pass
+
     return {
-        "running_projects": [k for k, v in _discovery_running.items() if v],
+        "running_projects": running,
         "last_run": (
             {
                 "id": last_run.id,
@@ -206,6 +239,9 @@ async def agent_status(db: Session = Depends(get_db)):
                 "is_dry_run": bool(last_run.is_dry_run),
                 "duration_seconds": last_run.duration_seconds,
                 "error": last_run.error,
+                # Phase E §2: heartbeat 정보 (UI 연결은 Phase F)
+                "heartbeat_at": last_run.heartbeat_at.isoformat() if last_run.heartbeat_at else None,
+                "locked_by": last_run.locked_by,
             }
             if last_run
             else None

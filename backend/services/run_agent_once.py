@@ -25,6 +25,7 @@ if _BACKEND not in sys.path:
 
 
 from services.research_agent import bootstrap_project, run_discovery_cycle
+from services.discovery_lock import discovery_lock, LockedError
 
 
 DEFAULT_PROJECT = "CF4"
@@ -83,13 +84,19 @@ async def amain():
     print(f"      주제: {args.topic}")
 
     print(f"\n[2/2] Discovery 1 사이클 실행 (dry_run={args.dry_run})…")
-    report = await run_discovery_cycle(
-        args.project,
-        args.topic,
-        limit_per_query=args.limit_per_query,
-        max_candidates=args.max_candidates,
-        dry_run=args.dry_run,
-    )
+    # Phase E §1: CLI도 collection별 fcntl 락. 충돌 시 stderr + exit 1.
+    try:
+        with discovery_lock(args.project):
+            report = await run_discovery_cycle(
+                args.project,
+                args.topic,
+                limit_per_query=args.limit_per_query,
+                max_candidates=args.max_candidates,
+                dry_run=args.dry_run,
+            )
+    except LockedError as e:
+        print(f"❌ {e}", file=sys.stderr)
+        sys.exit(1)
     _print_report(report)
 
 
