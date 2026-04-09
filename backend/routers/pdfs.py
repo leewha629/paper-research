@@ -1,4 +1,5 @@
 import os
+import re
 import httpx
 import fitz  # PyMuPDF
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
@@ -12,6 +13,26 @@ router = APIRouter(prefix="/pdfs", tags=["pdfs"])
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 PDF_DIR = os.path.join(BASE_DIR, "data", "pdfs")
+
+
+def _safe_pdf_path(paper_id: str, suffix: str = "") -> str:
+    """paper_id를 sanitize하여 안전한 PDF 파일 경로 반환.
+
+    Phase F-1.3: path traversal 방어.
+    """
+    safe_id = re.sub(r'[^a-zA-Z0-9_\-]', '_', str(paper_id))
+    if not safe_id:
+        raise HTTPException(status_code=400, detail="잘못된 paper_id")
+
+    filename = f"{safe_id}{suffix}.pdf"
+    path = os.path.join(PDF_DIR, filename)
+
+    resolved = os.path.realpath(path)
+    pdf_dir_resolved = os.path.realpath(PDF_DIR)
+    if not resolved.startswith(pdf_dir_resolved + os.sep):
+        raise HTTPException(status_code=400, detail="잘못된 파일 경로")
+
+    return resolved
 
 
 def extract_pdf_text(path: str, max_chars: int = 50000) -> tuple:
@@ -70,7 +91,7 @@ async def download_pdf(paper_id: int, db: Session = Depends(get_db)):
         )
 
     os.makedirs(PDF_DIR, exist_ok=True)
-    save_path = os.path.join(PDF_DIR, f"{paper.paper_id}.pdf")
+    save_path = _safe_pdf_path(paper.paper_id)
 
     try:
         async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
@@ -115,7 +136,7 @@ async def upload_pdf(
         raise HTTPException(status_code=400, detail="PDF 파일만 업로드 가능합니다.")
 
     os.makedirs(PDF_DIR, exist_ok=True)
-    save_path = os.path.join(PDF_DIR, f"{paper.paper_id}_manual.pdf")
+    save_path = _safe_pdf_path(paper.paper_id, "_manual")
 
     content = await file.read()
     with open(save_path, "wb") as f:
