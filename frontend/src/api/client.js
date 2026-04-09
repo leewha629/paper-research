@@ -122,9 +122,7 @@ export const aiAPI = {
   reviewDraft: (paperIds) => api.post('/ai/review-draft', { paper_ids: paperIds }),
   // 프롬프트 관리
   getPrompts: () => api.get('/ai/prompts'),
-  getPrompt: (name) => api.get(`/ai/prompts/${name}`),
   updatePrompt: (name, data) => api.put(`/ai/prompts/${name}`, data),
-  createPrompt: (data) => api.post('/ai/prompts', data),
   resetPrompts: () => api.post('/ai/prompts/reset'),
 }
 

@@ -11,7 +11,7 @@ from models import Paper, AIAnalysisResult, BatchJob, PromptTemplate
 from services.llm.router import parse_json_response, test_connection as llm_test_connection
 from schemas import (
     AnalyzeRequest, BatchAnalyzeRequest, TrendAnalysisRequest, ReviewDraftRequest,
-    PromptTemplateCreate, PromptTemplateUpdate,
+    PromptTemplateUpdate,
 )
 
 router = APIRouter(prefix="/ai", tags=["ai"])
@@ -794,50 +794,6 @@ async def list_prompts(db: Session = Depends(get_db)):
         }
         for p in prompts
     ]
-
-
-@router.get("/prompts/{name}")
-async def get_prompt(name: str, db: Session = Depends(get_db)):
-    pt = db.query(PromptTemplate).filter(PromptTemplate.name == name).first()
-    if not pt:
-        raise HTTPException(status_code=404, detail=f"프롬프트 '{name}'을 찾을 수 없습니다.")
-    return {
-        "id": pt.id,
-        "name": pt.name,
-        "label": pt.label,
-        "category": pt.category,
-        "system_prompt": pt.system_prompt,
-        "is_default": pt.is_default,
-        "created_at": pt.created_at.isoformat() if pt.created_at else None,
-        "updated_at": pt.updated_at.isoformat() if pt.updated_at else None,
-    }
-
-
-@router.post("/prompts")
-async def create_prompt(body: PromptTemplateCreate, db: Session = Depends(get_db)):
-    existing = db.query(PromptTemplate).filter(PromptTemplate.name == body.name).first()
-    if existing:
-        raise HTTPException(status_code=409, detail=f"프롬프트 '{body.name}'이 이미 존재합니다.")
-
-    pt = PromptTemplate(
-        name=body.name,
-        label=body.label or body.name,
-        category=body.category,
-        system_prompt=body.system_prompt,
-        is_default=False,
-    )
-    db.add(pt)
-    db.commit()
-    db.refresh(pt)
-
-    return {
-        "id": pt.id,
-        "name": pt.name,
-        "label": pt.label,
-        "category": pt.category,
-        "system_prompt": pt.system_prompt,
-        "is_default": pt.is_default,
-    }
 
 
 @router.put("/prompts/{name}")
