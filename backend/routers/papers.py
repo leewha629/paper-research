@@ -58,6 +58,9 @@ def paper_to_dict(paper: Paper, db: Session) -> dict:
         for a in analyses
     ]
 
+    # UNIQUE(paper_id) 보장이므로 폴더는 최대 1개
+    primary_folder = folders[0] if folders else None
+
     return {
         "id": paper.id,
         "paper_id": paper.paper_id,
@@ -81,6 +84,8 @@ def paper_to_dict(paper: Paper, db: Session) -> dict:
         "collections": collections,
         "tags": tags,
         "folders": folders,
+        "folder_id": primary_folder["id"] if primary_folder else None,
+        "folder_name": primary_folder["name"] if primary_folder else None,
         "analyses": analyses_list,
         "discovered_by": paper.discovered_by,
         "relevance_score": paper.relevance_score,

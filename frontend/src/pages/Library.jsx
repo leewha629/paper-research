@@ -414,6 +414,24 @@ export default function Library() {
     }
   }
 
+  // ── 폴더 이동 ──
+  const handleMove = async (paper, targetFolderId) => {
+    if (!targetFolderId) return
+    try {
+      await foldersAPI.addPaper(targetFolderId, paper.id)
+      setPapers((prev) =>
+        prev.map((p) => {
+          if (p.id !== paper.id) return p
+          const folder = folders.find((f) => f.id === targetFolderId)
+          return { ...p, folder_id: targetFolderId, folder_name: folder?.name || null }
+        })
+      )
+      toast.success('폴더 이동 완료')
+    } catch {
+      toast.error('폴더 이동 실패')
+    }
+  }
+
   // ── 논문 삭제 ──
   const handleDelete = async (paper) => {
     if (!confirm(`"${paper.title}" 을(를) 삭제하시겠습니까?`)) return
@@ -1283,6 +1301,18 @@ export default function Library() {
                               <option value="reading">읽는 중</option>
                               <option value="reviewed">읽음</option>
                               <option value="important">중요</option>
+                            </select>
+                            <select
+                              className="form-select"
+                              style={{ width: 120, padding: '3px 8px', fontSize: 12 }}
+                              value={paper.folder_id || ''}
+                              onChange={(e) => handleMove(paper, parseInt(e.target.value))}
+                              title="폴더 이동"
+                            >
+                              <option value="">📁 폴더 선택</option>
+                              {folders.map((f) => (
+                                <option key={f.id} value={f.id}>{f.name}</option>
+                              ))}
                             </select>
                             <button
                               className="btn btn-sm btn-danger"
