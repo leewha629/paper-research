@@ -178,6 +178,10 @@ export default function PaperDetail() {
   const [uploadingPdf, setUploadingPdf] = useState(false)
   const fileInputRef = useRef()
 
+  // 분석 이력 탭
+  const [analysisHistory, setAnalysisHistory] = useState([])
+  const [analysisHistoryLoaded, setAnalysisHistoryLoaded] = useState(false)
+
   // 메모
   const [notes, setNotes] = useState('')
 
@@ -493,7 +497,21 @@ export default function PaperDetail() {
     { key: 'network', label: '인용 네트워크' },
     { key: 'related', label: '관련 논문' },
     { key: 'notes', label: '메모' },
+    { key: 'history', label: '분석 이력' },
   ]
+
+  // 분석 이력 탭 클릭 시 지연 로딩
+  const handleTabChange = (key) => {
+    setActiveTab(key)
+    if (key === 'history' && !analysisHistoryLoaded && savedPaper) {
+      papersAPI.getAnalyses(savedPaper.id)
+        .then((res) => {
+          setAnalysisHistory(res.data || [])
+          setAnalysisHistoryLoaded(true)
+        })
+        .catch(() => setAnalysisHistoryLoaded(true))
+    }
+  }
 
   return (
     <div className="page-content">
@@ -718,7 +736,7 @@ export default function PaperDetail() {
           <button
             key={tab.key}
             className={`tab-btn ${activeTab === tab.key ? 'active' : ''}`}
-            onClick={() => setActiveTab(tab.key)}
+            onClick={() => handleTabChange(tab.key)}
           >
             {tab.label}
           </button>
@@ -1123,6 +1141,40 @@ export default function PaperDetail() {
                 </select>
               </div>
             </>
+          )}
+        </div>
+      )}
+
+      {/* ═══════════════════ 탭 6: 분석 이력 ═══════════════════ */}
+      {activeTab === 'history' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {!savedPaper ? (
+            <div style={{ padding: 16, fontSize: 13, color: 'var(--text-secondary)' }}>
+              서재에 저장된 논문만 분석 이력을 확인할 수 있습니다.
+            </div>
+          ) : !analysisHistoryLoaded ? (
+            <div style={{ padding: 16, fontSize: 13, color: 'var(--text-secondary)' }}>불러오는 중...</div>
+          ) : analysisHistory.length === 0 ? (
+            <div style={{ padding: 16, fontSize: 13, color: 'var(--text-secondary)' }}>분석 이력이 없습니다.</div>
+          ) : (
+            analysisHistory.map((a) => (
+              <div key={a.id} className="card" style={{ padding: 16 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <span style={{ fontWeight: 600, fontSize: 13, color: 'var(--accent)' }}>{a.analysis_type}</span>
+                  <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                    {new Date(a.created_at).toLocaleString('ko-KR')}
+                    {a.ai_backend && (
+                      <span style={{ marginLeft: 8, padding: '1px 6px', borderRadius: 4, background: 'var(--bg-secondary)', fontSize: 11 }}>
+                        {a.ai_backend === 'claude' ? 'Claude' : `Ollama: ${a.model_name}`}
+                      </span>
+                    )}
+                  </span>
+                </div>
+                <pre style={{ fontSize: 12, lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0, color: 'var(--text-primary)' }}>
+                  {a.result_text}
+                </pre>
+              </div>
+            ))
           )}
         </div>
       )}
