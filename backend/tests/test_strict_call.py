@@ -143,32 +143,3 @@ async def test_returns_validated_dict_on_success(monkeypatch):
     )
     assert isinstance(result, dict)
     assert result == {"foo": "bar", "n": 42}
-
-
-# ─── #15 ────────────────────────────────────────────────────────────────────
-@pytest.mark.asyncio
-async def test_legacy_ai_client_complete_delegates_to_strict_call(db_session, mock_ai):
-    """`AIClient.complete`는 Phase B에서 deprecated 어댑터로 남아 있어야 한다.
-
-    잠그는 동작: 기존 호출부 (alerts.py 등 마이그레이션 안 된 사이트, Phase A 테스트)는
-    여전히 ai.complete를 호출 → mock_ai 픽스처가 가로채 → 정상 동작.
-
-    이 테스트는 "Phase B에서 complete가 사라지면 안 된다"는 contract를 잠근다.
-    Phase C에서 fail-loud로 전환하면서 complete를 제거할 때 이 테스트는 의도적으로
-    제거(또는 교체)된다.
-    """
-    from ai_client import AIClient
-
-    mock_ai.queue_text("hello world")
-
-    ai = AIClient(db_session)
-    text, backend, model = await ai.complete(
-        system="you are helpful", user="say hi", expect_json=False
-    )
-
-    # mock_ai 경유 → text는 그대로, backend는 "ollama"로 고정
-    assert text == "hello world"
-    assert backend == "ollama"
-    assert model == "mock-model"
-    assert len(mock_ai.calls) == 1
-    assert mock_ai.calls[0]["expect_json"] is False

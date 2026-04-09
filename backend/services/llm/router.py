@@ -9,6 +9,8 @@ ollama_client 또는 claude_client의 strict_call로 위임한다.
 """
 from __future__ import annotations
 
+import json
+import re
 from typing import Any, Literal, Optional, Type, TypeVar, Union
 
 from pydantic import BaseModel
@@ -103,3 +105,42 @@ async def call_llm(
         temperature=temperature,
     )
     return value, "ollama", model
+
+
+def parse_json_response(text: str) -> dict:
+    """AI 응답에서 JSON 추출 (마크다운 코드블록 제거)."""
+    clean = re.sub(r"```[a-z]*\n?", "", text).strip().rstrip("`")
+    for start_char, end_char in [("{", "}"), ("[", "]")]:
+        start = clean.find(start_char)
+        end = clean.rfind(end_char)
+        if start != -1 and end != -1 and end > start:
+            try:
+                return json.loads(clean[start : end + 1])
+            except json.JSONDecodeError:
+                continue
+    return json.loads(clean)
+
+
+async def test_connection(db) -> dict:
+    """AI 백엔드 연결 테스트."""
+    backend, model = get_active_backend(db)
+    try:
+        text, _, model = await call_llm(
+            db,
+            system="You are a helpful assistant.",
+            user="Reply with just: OK",
+            expect="text",
+        )
+        return {
+            "success": True,
+            "backend": backend,
+            "model": model,
+            "message": f"연결 성공 ({model})",
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "backend": backend,
+            "model": "",
+            "message": str(e),
+        }

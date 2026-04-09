@@ -15,7 +15,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from ai_client import AIClient
 from models import Alert, Subscription
 from routers.alerts import _score_relevance, check_alerts
 from services.llm.exceptions import LLMUpstreamError, LLMSchemaError
@@ -50,8 +49,7 @@ async def test_score_relevance_extracts_first_number(db_session, mock_ai):
     """
     mock_ai.queue_text('{"score": 8.5, "reason": "직접 일치"}')
 
-    ai = AIClient(db_session)
-    score = await _score_relevance(ai, _make_sub(), _make_paper())
+    score = await _score_relevance(db_session, _make_sub(), _make_paper())
 
     assert score == 8.5
 

@@ -39,7 +39,7 @@ _TestSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_TEST_E
 
 
 def _seed_default_settings(session) -> None:
-    """AIClient가 동작하려면 ai_backend / ollama_* 키가 있어야 한다."""
+    """call_llm이 동작하려면 ai_backend / ollama_* 키가 있어야 한다."""
     from models import AppSetting
 
     defaults = {
@@ -123,28 +123,13 @@ def _block_real_http(monkeypatch):
 # ─── Mock 픽스처 (네트워크 차단의 핵심) ─────────────────────────────────
 @pytest.fixture
 def mock_ai(monkeypatch):
-    """`AIClient.complete`를 monkeypatch로 교체.
+    """`services.llm.router.call_llm`을 monkeypatch로 교체.
 
     PLAN §A.3: mock_ai 픽스처는 monkeypatch로만 동작 → 실제 ollama 호출 0건.
     """
     from tests.fixtures.mock_ai import install_mock_ai
 
     return install_mock_ai(monkeypatch)
-
-
-@pytest.fixture
-def mock_ollama_lowlevel(monkeypatch):
-    """`AIClient._ollama` 저수준 교체용 팩토리.
-
-    test_ai_client_contract.py에서 retry/JSON 검증 로직 자체를 테스트할 때 사용.
-    fixture는 install 함수를 그대로 반환한다 (호출자가 응답 리스트를 결정).
-    """
-    from tests.fixtures.mock_ai import install_mock_ollama
-
-    def _factory(responses: list):
-        return install_mock_ollama(monkeypatch, responses)
-
-    return _factory
 
 
 @pytest.fixture

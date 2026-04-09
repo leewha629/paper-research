@@ -5,7 +5,7 @@ from collections import Counter
 from typing import Optional
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from database import get_db
 from models import (
@@ -198,7 +198,7 @@ async def trigger_agent_run(
         "project": project,
         "topic": topic,
         "max_candidates": max_candidates,
-        "started_at": datetime.utcnow().isoformat(),
+        "started_at": datetime.now(timezone.utc).isoformat(),
         "message": "백그라운드에서 사이클을 시작했습니다. 완료까지 약 2~3분.",
     }
 

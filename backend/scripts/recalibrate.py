@@ -35,7 +35,7 @@ import logging
 import shutil
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -177,7 +177,7 @@ async def recalibrate_one(
 
 async def main_async(args: argparse.Namespace) -> int:
     db: Session = SessionLocal()
-    started_at = datetime.utcnow()
+    started_at = datetime.now(timezone.utc)
     ts = started_at.strftime("%Y%m%d_%H%M%S")
     t0 = time.time()
     decisions: List[dict] = []
@@ -257,10 +257,10 @@ async def main_async(args: argparse.Namespace) -> int:
 
             paper.relevance_score = judgment.score
             paper.relevance_reason = judgment.reason
-            paper.relevance_checked_at = datetime.utcnow()
+            paper.relevance_checked_at = datetime.now(timezone.utc)
             if after_bucket == "trash":
                 paper.is_trashed = True
-                paper.trashed_at = datetime.utcnow()
+                paper.trashed_at = datetime.now(timezone.utc)
                 paper.trash_reason = "phase_d_v2_recalibration"
             else:
                 paper.is_trashed = False
@@ -273,7 +273,7 @@ async def main_async(args: argparse.Namespace) -> int:
         if not args.dry_run:
             run = AgentRun(
                 started_at=started_at,
-                finished_at=datetime.utcnow(),
+                finished_at=datetime.now(timezone.utc),
                 topic_snapshot=f"PHASE_D_V2_RECALIBRATION[{collection.name}]: {topic}",
                 keywords_used=json.dumps(
                     ["phase_d_v2_recalibration", f"collection:{collection.name}"],
@@ -332,7 +332,7 @@ def write_diff_md(
     lines = [
         f"# Phase D v2 — Calibration Diff ({collection_name})",
         "",
-        f"실행: {datetime.utcnow().isoformat()}Z  "
+        f"실행: {datetime.now(timezone.utc).isoformat()}Z  "
         f"({'DRY RUN' if args.dry_run else 'COMMIT'})",
         f"collection: **{collection_name}**",
         f"총 {len(decisions)}건 (성공 {succ}, 실패 {fail})",

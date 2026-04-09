@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, ForeignKey, Float, UniqueConstraint
 from sqlalchemy.orm import relationship
-from datetime import datetime
+from datetime import datetime, timezone
 from database import Base
 
 
@@ -23,7 +23,7 @@ class Paper(Base):
     pdf_text = Column(Text, nullable=True)
     external_ids_json = Column(Text, nullable=True)
     fields_of_study_json = Column(Text, nullable=True)
-    saved_at = Column(DateTime, default=datetime.utcnow)
+    saved_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     status = Column(String, default="unread")  # "unread"/"reading"/"read"/"important"
     user_notes = Column(Text, nullable=True)
 
@@ -55,7 +55,7 @@ class Collection(Base):
     name = Column(String, unique=True, nullable=False)
     description = Column(Text, nullable=True)
     color = Column(String, default="#6c63ff")
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     paper_collections = relationship("PaperCollection", back_populates="collection", cascade="all, delete-orphan")
 
@@ -79,7 +79,7 @@ class Tag(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, unique=True, nullable=False)
     color = Column(String, default="#6c63ff")  # 6색 컬러 코딩
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     paper_tags = relationship("PaperTag", back_populates="tag", cascade="all, delete-orphan")
 
@@ -107,7 +107,7 @@ class Folder(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
     parent_id = Column(Integer, ForeignKey("folders.id"), nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     is_system_folder = Column(Boolean, default=False)  # Migration 001 — 자동 시드 폴더 보호
 
     children = relationship("Folder", backref="parent", remote_side="Folder.id", cascade="all, delete-orphan",
@@ -144,7 +144,7 @@ class AIAnalysisResult(Base):
     result_json = Column(Text, nullable=True)  # 구조화된 JSON 결과
     ai_backend = Column(String, nullable=False)
     model_name = Column(String, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     paper = relationship("Paper", back_populates="analyses")
 
@@ -168,7 +168,7 @@ class SearchCache(Base):
     keyword = Column(String, unique=True, index=True, nullable=False)
     queries_json = Column(Text, nullable=False)
     results_json = Column(Text, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class SearchHistory(Base):
@@ -180,7 +180,7 @@ class SearchHistory(Base):
     queries_json = Column(Text, nullable=True)
     result_count = Column(Integer, default=0)
     total_collected = Column(Integer, default=0)
-    searched_at = Column(DateTime, default=datetime.utcnow)
+    searched_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 # --- 알림 구독 ---
@@ -194,7 +194,7 @@ class Subscription(Base):
     label = Column(String, nullable=True)       # 표시용 레이블
     is_active = Column(Boolean, default=True)
     last_checked = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class Alert(Base):
@@ -209,7 +209,7 @@ class Alert(Base):
     venue = Column(String, nullable=True)
     relevance_score = Column(Float, nullable=True)
     is_read = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     # --- Phase C (Migration 002): AI 점수 실패 표면화 ---
     # is_ai_failed=True인 행은 relevance_score=NULL.
@@ -236,7 +236,7 @@ class BatchJob(Base):
     completed_items = Column(Integer, default=0)
     result_text = Column(Text, nullable=True)
     result_json = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     completed_at = Column(DateTime, nullable=True)
 
 
@@ -251,8 +251,8 @@ class PromptTemplate(Base):
     category = Column(String, nullable=False)             # "analysis" / "search" / "batch"
     system_prompt = Column(Text, nullable=False)
     is_default = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 # --- 필터 프리셋 ---
@@ -263,7 +263,7 @@ class FilterPreset(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, unique=True, nullable=False)
     filters_json = Column(Text, nullable=False)  # JSON: {journals, fields, year_from, year_to, ...}
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 # --- 자율 연구 에이전트 (Migration 001) ---
@@ -273,7 +273,7 @@ class AgentRun(Base):
     __tablename__ = "agent_runs"
 
     id = Column(Integer, primary_key=True, index=True)
-    started_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    started_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
     finished_at = Column(DateTime, nullable=True)
     topic_snapshot = Column(Text, nullable=True)         # 실행 시점의 주제
     keywords_used = Column(Text, nullable=True)          # JSON 배열
@@ -299,6 +299,6 @@ class SearchedKeyword(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     keyword = Column(String, unique=True, nullable=False)
-    first_searched_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    last_searched_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    first_searched_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+    last_searched_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
     hit_count = Column(Integer, default=1)

@@ -45,7 +45,7 @@ import json
 import logging
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -142,7 +142,7 @@ async def recalibrate_one(
 
 async def main_async(args: argparse.Namespace) -> int:
     db: Session = SessionLocal()
-    started_at = datetime.utcnow()
+    started_at = datetime.now(timezone.utc)
     t0 = time.time()
     decisions: List[dict] = []
     errors: List[str] = []
@@ -203,10 +203,10 @@ async def main_async(args: argparse.Namespace) -> int:
             if not args.dry_run:
                 paper.relevance_score = judgment.score
                 paper.relevance_reason = judgment.reason
-                paper.relevance_checked_at = datetime.utcnow()
+                paper.relevance_checked_at = datetime.now(timezone.utc)
                 paper.is_trashed = (after_bucket == "trash")
                 if after_bucket == "trash":
-                    paper.trashed_at = datetime.utcnow()
+                    paper.trashed_at = datetime.now(timezone.utc)
                     paper.trash_reason = "phase_d_recalibration"
                 else:
                     paper.is_trashed = False
@@ -219,7 +219,7 @@ async def main_async(args: argparse.Namespace) -> int:
         if not args.dry_run:
             run = AgentRun(
                 started_at=started_at,
-                finished_at=datetime.utcnow(),
+                finished_at=datetime.now(timezone.utc),
                 topic_snapshot=f"PHASE_D_RECALIBRATION: {topic}",
                 keywords_used=json.dumps(["phase_d_recalibration"], ensure_ascii=False),
                 candidates_fetched=len(papers),
@@ -286,7 +286,7 @@ def write_diff_md(decisions: List[dict], args: argparse.Namespace) -> None:
     lines = [
         "# Phase D — Calibration Diff",
         "",
-        f"실행: {datetime.utcnow().isoformat()}Z  "
+        f"실행: {datetime.now(timezone.utc).isoformat()}Z  "
         f"({'DRY RUN' if args.dry_run else 'COMMIT'})",
         f"총 {len(decisions)}건 (실패 {sum(1 for d in decisions if d['after_score'] is None)}건)",
         "",

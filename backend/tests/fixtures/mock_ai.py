@@ -1,6 +1,7 @@
-"""AIClient mock 헬퍼.
+"""call_llm mock 헬퍼.
 
-PLAN §A.1 — `AIClient.complete`를 monkeypatch하는 헬퍼 (성공/타임아웃/JSON깨짐 3가지 모드).
+PLAN §A.1 — `services.llm.router.call_llm`을 monkeypatch하는 헬퍼
+(성공/타임아웃/JSON깨짐 3가지 모드).
 
 이 헬퍼는 **monkeypatch로만** 동작한다 → 실제 ollama/claude 네트워크를 절대
 호출하지 않는다 (PLAN §A.3, §A.4 네트워크 차단 검증 요구사항).
@@ -11,7 +12,7 @@ from typing import Any, Optional
 
 
 class MockAIBehavior:
-    """`AIClient.complete` 호출을 가로채 사전 정의된 응답을 반환한다.
+    """`call_llm` 호출을 가로채 사전 정의된 응답을 반환한다.
 
     사용 예:
         mock_ai.queue_text("8.5")            # 1회 텍스트 응답
@@ -74,41 +75,12 @@ class MockAIBehavior:
 
 
 def install_mock_ai(monkeypatch) -> MockAIBehavior:
-    """`AIClient.complete` + `services.llm.router.call_llm` 둘 다 MockAIBehavior로 교체.
-
-    Phase B 마이그레이션 후 일부 호출 사이트는 `call_llm`을 거치지만, Phase A
-    테스트들은 여전히 `mock_ai`로 동작을 잠그고 있어야 한다 → 두 진입점 모두
-    같은 큐를 보도록 같이 패치.
+    """`services.llm.router.call_llm`을 MockAIBehavior로 교체.
 
     monkeypatch 스코프가 끝나면 자동으로 원복된다 → 테스트 간 누수 없음.
     """
     mock = MockAIBehavior()
 
-    from ai_client import AIClient
-
-    async def patched_complete(
-        self,
-        system: str,
-        user: str,
-        images=None,
-        max_retries: int = 2,
-        expect_json: bool = False,
-    ):
-        return await mock(
-            system,
-            user,
-            images=images,
-            max_retries=max_retries,
-            expect_json=expect_json,
-        )
-
-    monkeypatch.setattr(AIClient, "complete", patched_complete)
-
-    # Phase B: services.llm.router.call_llm도 같은 큐를 보도록 패치.
-    # 동작: error 항목이면 raise, text 항목이면 expect 모드에 따라 변환:
-    #   expect="text"   → (text, "ollama", "mock-model")
-    #   expect="json"   → (json.loads(text), "ollama", "mock-model")
-    #   expect="schema" → (schema.model_validate(json.loads(text)), ...)
     import json as _json
 
     async def patched_call_llm(
@@ -124,7 +96,7 @@ def install_mock_ai(monkeypatch) -> MockAIBehavior:
         temperature=None,
         num_predict: int = 1024,
     ):
-        # 큐 소비 (mock.__call__과 동일 로직)
+        # 큐 소비
         mock.calls.append(
             {
                 "system": system,
@@ -175,35 +147,3 @@ def install_mock_ai(monkeypatch) -> MockAIBehavior:
     monkeypatch.setattr(_router, "call_llm", patched_call_llm)
 
     return mock
-
-
-def install_mock_ollama(monkeypatch, responses: list[Any]) -> dict:
-    """`AIClient._ollama` (저수준)를 교체한다.
-
-    `complete` 자체의 retry/JSON 검증 로직을 테스트할 때 사용 — 즉
-    Phase A 테스트 #2, #3 (`test_ai_client_contract`).
-
-    responses 항목:
-        - 문자열 → 그 텍스트를 반환
-        - 예외 인스턴스 → raise
-
-    반환되는 dict는 호출 횟수 추적용 (`state["calls"]`).
-    """
-    state = {"calls": 0, "responses": list(responses)}
-
-    from ai_client import AIClient
-
-    async def patched_ollama(self, system: str, user: str, expect_json: bool = False):
-        idx = state["calls"]
-        state["calls"] += 1
-        if idx >= len(state["responses"]):
-            raise RuntimeError(
-                f"mock_ollama: {idx + 1}번째 호출이지만 응답이 {len(state['responses'])}개뿐"
-            )
-        item = state["responses"][idx]
-        if isinstance(item, BaseException):
-            raise item
-        return item, "ollama", "mock-model"
-
-    monkeypatch.setattr(AIClient, "_ollama", patched_ollama)
-    return state

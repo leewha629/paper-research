@@ -2,7 +2,7 @@ import asyncio
 import json
 import re
 import unicodedata
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List
 
 import httpx
@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from database import get_db, SessionLocal
 from models import Paper, AppSetting, SearchCache, SearchHistory, FilterPreset
 from s2_client import S2Client, RateLimitError, NotFoundError
-from ai_client import AIClient, parse_json_response
+
 
 router = APIRouter(prefix="/search", tags=["search"])
 
@@ -589,7 +589,7 @@ async def ai_search_stream(request: AiSearchRequest):
             use_cache = request.custom_queries is None
             if use_cache:
                 yield sse({"phase": "checking_cache", "message": "캐시 확인 중..."})
-                cutoff = datetime.utcnow() - timedelta(hours=CACHE_TTL_HOURS)
+                cutoff = datetime.now(timezone.utc) - timedelta(hours=CACHE_TTL_HOURS)
                 cached = (
                     db.query(SearchCache)
                     .filter(SearchCache.keyword == cache_key, SearchCache.created_at >= cutoff)
@@ -845,7 +845,7 @@ async def ai_search_stream(request: AiSearchRequest):
             if existing:
                 existing.queries_json = json.dumps(queries_with_counts, ensure_ascii=False)
                 existing.results_json = json.dumps(cache_payload, ensure_ascii=False)
-                existing.created_at = datetime.utcnow()
+                existing.created_at = datetime.now(timezone.utc)
             else:
                 db.add(SearchCache(
                     keyword=cache_key,

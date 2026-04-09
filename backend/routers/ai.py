@@ -1,6 +1,6 @@
 import json
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -8,7 +8,7 @@ from typing import Optional, List
 
 from database import get_db
 from models import Paper, AIAnalysisResult, BatchJob, PromptTemplate
-from ai_client import AIClient, parse_json_response
+from services.llm.router import parse_json_response, test_connection as llm_test_connection
 
 router = APIRouter(prefix="/ai", tags=["ai"])
 
@@ -584,7 +584,7 @@ async def batch_analyze(body: dict, db: Session = Depends(get_db)):
         if job:
             job.status = "completed"
             job.progress = 100
-            job.completed_at = datetime.utcnow()
+            job.completed_at = datetime.now(timezone.utc)
             db.commit()
 
         yield f"data: {json.dumps({'type': 'done', 'job_id': job_id, 'completed': completed, 'total': total_tasks}, ensure_ascii=False)}\n\n"
@@ -636,7 +636,7 @@ async def trend_analyze(body: dict, db: Session = Depends(get_db)):
         completed_items=len(papers),
         progress=100,
         result_text=result_text,
-        completed_at=datetime.utcnow(),
+        completed_at=datetime.now(timezone.utc),
     )
     db.add(job)
     db.commit()
@@ -695,7 +695,7 @@ async def review_draft(body: dict, db: Session = Depends(get_db)):
         completed_items=len(papers),
         progress=100,
         result_text=result_text,
-        completed_at=datetime.utcnow(),
+        completed_at=datetime.now(timezone.utc),
     )
     db.add(job)
     db.commit()
@@ -863,7 +863,7 @@ async def update_prompt(name: str, body: dict, db: Session = Depends(get_db)):
         pt.system_prompt = body["system_prompt"]
 
     pt.is_default = False  # 수정하면 커스텀으로 전환
-    pt.updated_at = datetime.utcnow()
+    pt.updated_at = datetime.now(timezone.utc)
 
     db.commit()
     db.refresh(pt)
@@ -898,8 +898,7 @@ async def reset_prompts(db: Session = Depends(get_db)):
 
 @router.post("/test-connection")
 async def test_connection(db: Session = Depends(get_db)):
-    ai = AIClient(db)
-    return await ai.test_connection()
+    return await llm_test_connection(db)
 
 
 # ---------------------------------------------------------------------------

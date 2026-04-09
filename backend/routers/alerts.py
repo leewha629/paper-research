@@ -4,12 +4,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 from database import get_db
 from models import Subscription, Alert, AppSetting
 from s2_client import S2Client
-from ai_client import AIClient
 from services.llm.exceptions import (
     LLMError,
     LLMTimeoutError,
@@ -226,7 +225,6 @@ async def check_alerts(db: Session = Depends(get_db)):
     threshold = float(threshold_record.value) if threshold_record and threshold_record.value else 6.0
 
     s2 = S2Client(api_key=s2_key)
-    ai = AIClient(db)
 
     active_subs = db.query(Subscription).filter(Subscription.is_active == True).all()
     total_new = 0
@@ -277,7 +275,7 @@ async def check_alerts(db: Session = Depends(get_db)):
             for p in new_papers[:10]:  # 한 번에 최대 10개
                 authors_json = json.dumps(p.get("authors") or [], ensure_ascii=False)
                 try:
-                    score = await _score_relevance(ai, sub, p)
+                    score = await _score_relevance(db, sub, p)
                 except LLMError as llm_err:
                     reason = _classify_llm_error(llm_err)
                     detail = str(llm_err)[:500]
@@ -318,7 +316,7 @@ async def check_alerts(db: Session = Depends(get_db)):
                     db.add(alert)
                     total_new += 1
 
-            sub.last_checked = datetime.utcnow()
+            sub.last_checked = datetime.now(timezone.utc)
 
         except Exception:
             # 개별 구독 실패 시 계속 진행
@@ -328,7 +326,7 @@ async def check_alerts(db: Session = Depends(get_db)):
     return {"success": True, "new_alerts": total_new}
 
 
-async def _score_relevance(ai: AIClient, sub: Subscription, paper: dict) -> float:
+async def _score_relevance(db, sub: Subscription, paper: dict) -> float:
     """AI를 사용하여 논문의 구독 관련성 점수 계산 (0~10).
 
     Phase C: strict_call(expect="schema", schema=RelevanceScore)로 전환.
@@ -356,7 +354,7 @@ async def _score_relevance(ai: AIClient, sub: Subscription, paper: dict) -> floa
     from services.llm.router import call_llm
 
     rs, _, _ = await call_llm(
-        ai.db,
+        db,
         system=system,
         user=user_msg,
         expect="schema",

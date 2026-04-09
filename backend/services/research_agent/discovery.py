@@ -18,7 +18,7 @@ import os
 import socket
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from sqlalchemy.exc import IntegrityError
@@ -129,7 +129,7 @@ def _load_recent_keywords(db: Session, limit: int = 30) -> List[str]:
 
 
 def _record_keywords(db: Session, keywords: List[str]) -> None:
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     for kw in keywords:
         existing = (
             db.query(SearchedKeyword).filter(SearchedKeyword.keyword == kw).first()
@@ -167,7 +167,7 @@ async def _heartbeat_loop(db_factory, run_id: int) -> None:
                 try:
                     row = hb_db.query(AgentRun).filter(AgentRun.id == run_id).first()
                     if row is not None:
-                        row.heartbeat_at = datetime.utcnow()
+                        row.heartbeat_at = datetime.now(timezone.utc)
                         hb_db.commit()
                 finally:
                     hb_db.close()
@@ -195,7 +195,7 @@ async def run_discovery_cycle(
     report = DiscoveryReport(
         project=project_name,
         topic=topic,
-        started_at=datetime.utcnow(),
+        started_at=datetime.now(timezone.utc),
         is_dry_run=dry_run,
     )
     t0 = time.time()
@@ -233,7 +233,7 @@ async def run_discovery_cycle(
         logger.info(f"[discovery:{project_name}] 키워드 {len(keywords)}: {keywords}")
 
         if not keywords:
-            report.finished_at = datetime.utcnow()
+            report.finished_at = datetime.now(timezone.utc)
             report.duration_seconds = time.time() - t0
             _persist_run(db, report, run_id=run_id)
             return report
@@ -332,9 +332,9 @@ async def run_discovery_cycle(
                     discovered_by="agent",
                     relevance_score=score,
                     relevance_reason=reason,
-                    relevance_checked_at=datetime.utcnow(),
+                    relevance_checked_at=datetime.now(timezone.utc),
                     is_trashed=(bucket == "휴지통"),
-                    trashed_at=(datetime.utcnow() if bucket == "휴지통" else None),
+                    trashed_at=(datetime.now(timezone.utc) if bucket == "휴지통" else None),
                     trash_reason=("low_relevance" if bucket == "휴지통" else None),
                     is_eval_failed=eval_failed_flag,
                     eval_failure_reason=(reason if eval_failed_flag else None),
@@ -379,7 +379,7 @@ async def run_discovery_cycle(
             _record_keywords(db, keywords)
             db.commit()
 
-        report.finished_at = datetime.utcnow()
+        report.finished_at = datetime.now(timezone.utc)
         report.duration_seconds = time.time() - t0
 
         _persist_run(db, report, run_id=run_id)
@@ -398,7 +398,7 @@ async def run_discovery_cycle(
             try:
                 row = final_db.query(AgentRun).filter(AgentRun.id == run_id).first()
                 if row is not None:
-                    row.heartbeat_at = datetime.utcnow()
+                    row.heartbeat_at = datetime.now(timezone.utc)
                     final_db.commit()
             finally:
                 final_db.close()
@@ -413,7 +413,7 @@ def _persist_run(db: Session, report: DiscoveryReport, *, run_id: int) -> None:
         # 비정상 — 시작 row가 사라졌다. 새로 INSERT 폴백.
         run = AgentRun(started_at=report.started_at)
         db.add(run)
-    run.finished_at = report.finished_at or datetime.utcnow()
+    run.finished_at = report.finished_at or datetime.now(timezone.utc)
     run.topic_snapshot = report.topic
     run.keywords_used = json.dumps(report.keywords_used, ensure_ascii=False)
     run.candidates_fetched = report.candidates_fetched
@@ -425,7 +425,7 @@ def _persist_run(db: Session, report: DiscoveryReport, *, run_id: int) -> None:
     run.error = "\n".join(report.errors) if report.errors else None
     run.duration_seconds = report.duration_seconds
     run.decisions_json = json.dumps(report.decisions, ensure_ascii=False)
-    run.heartbeat_at = datetime.utcnow()
+    run.heartbeat_at = datetime.now(timezone.utc)
     try:
         db.commit()
     except Exception as e:

@@ -3,6 +3,7 @@ import sys
 import asyncio
 import logging
 import httpx
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -27,7 +28,69 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PDF_DIR = os.path.join(BASE_DIR, "data", "pdfs")
 STATIC_DIR = os.path.join(BASE_DIR, "backend", "static")
 
-app = FastAPI(title="Paper Research API", version="1.0.0")
+DEFAULT_SETTINGS = {
+    "ai_backend": "claude",
+    "claude_api_key": "",
+    "ollama_base_url": "http://localhost:11434",
+    "ollama_model": "gemma4:e4b",
+    "semantic_scholar_api_key": "",
+    "unpaywall_email": "",
+    "check_interval": "24",
+    "relevance_threshold": "6",
+}
+
+
+async def preload_ollama_model():
+    """앱 시작 시 Ollama 모델을 RAM/VRAM에 미리 로드 (백엔드가 ollama로 설정된 경우)."""
+    db = SessionLocal()
+    try:
+        backend_setting = db.query(AppSetting).filter(AppSetting.key == "ai_backend").first()
+        if not backend_setting or backend_setting.value != "ollama":
+            return
+        base_url_setting = db.query(AppSetting).filter(AppSetting.key == "ollama_base_url").first()
+        model_setting = db.query(AppSetting).filter(AppSetting.key == "ollama_model").first()
+        base_url = (base_url_setting.value if base_url_setting else "") or "http://localhost:11434"
+        model = (model_setting.value if model_setting else "") or "gemma4:e4b"
+    finally:
+        db.close()
+
+    try:
+        # 빈 prompt + keep_alive=30m 으로 모델만 메모리에 적재 (생성 안 함)
+        async with httpx.AsyncClient(timeout=600.0) as client:
+            await client.post(
+                f"{base_url}/api/generate",
+                json={"model": model, "prompt": "", "keep_alive": "30m"},
+            )
+        print(f"[startup] Ollama 모델 프리로드 완료: {model} (keep_alive=30m)")
+    except Exception as e:
+        print(f"[startup] Ollama 프리로드 실패 (무시): {e}")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # ─── startup ───
+    Base.metadata.create_all(bind=engine)
+    os.makedirs(PDF_DIR, exist_ok=True)
+
+    # Seed default settings
+    db = SessionLocal()
+    try:
+        for key, value in DEFAULT_SETTINGS.items():
+            existing = db.query(AppSetting).filter(AppSetting.key == key).first()
+            if not existing:
+                db.add(AppSetting(key=key, value=value))
+        db.commit()
+    finally:
+        db.close()
+
+    # Ollama 모델 프리로드 (블로킹 방지: 백그라운드 태스크로 실행)
+    asyncio.create_task(preload_ollama_model())
+
+    yield
+    # ─── shutdown (현재는 비어있음) ───
+
+
+app = FastAPI(title="Paper Research API", version="1.0.0", lifespan=lifespan)
 
 
 # ─── LLMError 글로벌 핸들러 (Phase C — fail-loud) ───────────────────────
@@ -93,67 +156,6 @@ app.mount("/pdfs", StaticFiles(directory=PDF_DIR), name="pdfs")
 # Mount frontend static files (after build)
 if os.path.exists(STATIC_DIR):
     app.mount("/assets", StaticFiles(directory=os.path.join(STATIC_DIR, "assets")), name="assets")
-
-
-DEFAULT_SETTINGS = {
-    "ai_backend": "claude",
-    "claude_api_key": "",
-    "ollama_base_url": "http://localhost:11434",
-    "ollama_model": "gemma4:e4b",
-    "semantic_scholar_api_key": "",
-    "unpaywall_email": "",
-    "check_interval": "24",
-    "relevance_threshold": "6",
-}
-
-
-async def preload_ollama_model():
-    """앱 시작 시 Ollama 모델을 RAM/VRAM에 미리 로드 (백엔드가 ollama로 설정된 경우)."""
-    db = SessionLocal()
-    try:
-        backend_setting = db.query(AppSetting).filter(AppSetting.key == "ai_backend").first()
-        if not backend_setting or backend_setting.value != "ollama":
-            return
-        base_url_setting = db.query(AppSetting).filter(AppSetting.key == "ollama_base_url").first()
-        model_setting = db.query(AppSetting).filter(AppSetting.key == "ollama_model").first()
-        base_url = (base_url_setting.value if base_url_setting else "") or "http://localhost:11434"
-        model = (model_setting.value if model_setting else "") or "gemma4:e4b"
-    finally:
-        db.close()
-
-    try:
-        # 빈 prompt + keep_alive=30m 으로 모델만 메모리에 적재 (생성 안 함)
-        async with httpx.AsyncClient(timeout=600.0) as client:
-            await client.post(
-                f"{base_url}/api/generate",
-                json={"model": model, "prompt": "", "keep_alive": "30m"},
-            )
-        print(f"[startup] Ollama 모델 프리로드 완료: {model} (keep_alive=30m)")
-    except Exception as e:
-        print(f"[startup] Ollama 프리로드 실패 (무시): {e}")
-
-
-@app.on_event("startup")
-async def startup():
-    # Create tables
-    Base.metadata.create_all(bind=engine)
-
-    # Create directories
-    os.makedirs(PDF_DIR, exist_ok=True)
-
-    # Seed default settings
-    db = SessionLocal()
-    try:
-        for key, value in DEFAULT_SETTINGS.items():
-            existing = db.query(AppSetting).filter(AppSetting.key == key).first()
-            if not existing:
-                db.add(AppSetting(key=key, value=value))
-        db.commit()
-    finally:
-        db.close()
-
-    # Ollama 모델 프리로드 (블로킹 방지: 백그라운드 태스크로 실행)
-    asyncio.create_task(preload_ollama_model())
 
 
 # SPA fallback: serve index.html for non-API routes
