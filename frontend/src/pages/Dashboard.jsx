@@ -43,15 +43,30 @@ export default function Dashboard() {
   const [searchQuery, setSearchQuery] = useState('')
   const [agentBusy, setAgentBusy] = useState(false)
   const [agentMessage, setAgentMessage] = useState('')
+  const [heartbeatStatus, setHeartbeatStatus] = useState(null)
 
   useEffect(() => {
     loadStats()
   }, [])
 
-  // 에이전트 실행 중이면 5초마다 폴링
+  // 에이전트 실행 중이면 5초마다 stats 폴링
   useEffect(() => {
     if (!stats?.agent_running) return
     const t = setInterval(loadStats, 5000)
+    return () => clearInterval(t)
+  }, [stats?.agent_running])
+
+  // 에이전트 실행 중이면 5초마다 heartbeat 폴링 (경량 엔드포인트)
+  useEffect(() => {
+    if (!stats?.agent_running) { setHeartbeatStatus(null); return }
+    const poll = async () => {
+      try {
+        const res = await dashboardAPI.agentStatus()
+        setHeartbeatStatus(res.data)
+      } catch {}
+    }
+    poll()
+    const t = setInterval(poll, 5000)
     return () => clearInterval(t)
   }, [stats?.agent_running])
 
@@ -181,6 +196,18 @@ export default function Dashboard() {
 
         {agentMessage && (
           <div style={{ ...styles.agentNote, color: '#a5b4fc' }}>{agentMessage}</div>
+        )}
+
+        {stats.agent_running && (
+          <div style={{ ...styles.agentNote, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: COLORS.success, display: 'inline-block', animation: 'pulse 1.5s infinite' }} />
+            <span>실행 중</span>
+            {heartbeatStatus?.last_run?.heartbeat_at && (
+              <span style={{ color: '#8892a4', fontSize: 12 }}>
+                · 마지막 heartbeat: {new Date(heartbeatStatus.last_run.heartbeat_at).toLocaleTimeString('ko-KR')}
+              </span>
+            )}
+          </div>
         )}
 
         {stats.agent_last_run ? (
