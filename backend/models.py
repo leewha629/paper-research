@@ -37,6 +37,11 @@ class Paper(Base):
     trashed_at = Column(DateTime, nullable=True)
     trash_reason = Column(String, nullable=True)  # "low_relevance" | "manual" | "duplicate"
 
+    # --- Phase F-1.2: 평가 실패 표면화 ---
+    is_eval_failed = Column(Boolean, default=False, nullable=False)
+    eval_failure_reason = Column(Text, nullable=True)
+    eval_retry_count = Column(Integer, default=0, nullable=False)
+
     analyses = relationship("AIAnalysisResult", back_populates="paper", cascade="all, delete-orphan")
     paper_collections = relationship("PaperCollection", back_populates="paper", cascade="all, delete-orphan")
     paper_tags = relationship("PaperTag", back_populates="paper", cascade="all, delete-orphan")

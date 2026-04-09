@@ -266,6 +266,7 @@ async def run_discovery_cycle(
 
         # 4) 평가 + 분류 + 저장
         for cand in candidates:
+            eval_failed_flag = False
             try:
                 judgment = await score_relevance(
                     topic, cand["title"], cand["abstract"] or ""
@@ -273,12 +274,19 @@ async def run_discovery_cycle(
                 score = judgment.score
                 reason = judgment.reason
             except StrictCallError as e:
+                # Phase F-1.2: HOLD_SCORE 폴백 제거 (Phase C fail-loud 원칙 위반).
+                # 논문은 저장하되 "평가 실패" 폴더로 명시 라우팅.
                 report.errors.append(f"score_relevance 실패 ({cand['paper_id']}): {e}")
-                score = HOLD_SCORE
-                reason = f"평가 실패: {str(e)[:100]}"
+                score = None
+                reason = f"[평가 실패] {str(e)[:200]}"
+                eval_failed_flag = True
+
+            if eval_failed_flag:
+                bucket = "평가 실패"
+            else:
+                bucket = _classify(score)
 
             report.score_distribution[score] = report.score_distribution.get(score, 0) + 1
-            bucket = _classify(score)
             report.decisions.append(
                 {
                     "paper_id": cand["paper_id"],
@@ -295,6 +303,8 @@ async def run_discovery_cycle(
                 report.holding += 1
             elif bucket == "자동 발견":
                 report.auto_saved += 1
+            elif bucket == "평가 실패":
+                report.eval_failed = getattr(report, "eval_failed", 0) + 1
             else:
                 report.recommended += 1
 
@@ -326,6 +336,8 @@ async def run_discovery_cycle(
                     is_trashed=(bucket == "휴지통"),
                     trashed_at=(datetime.utcnow() if bucket == "휴지통" else None),
                     trash_reason=("low_relevance" if bucket == "휴지통" else None),
+                    is_eval_failed=eval_failed_flag,
+                    eval_failure_reason=(reason if eval_failed_flag else None),
                 )
                 db.add(paper)
                 db.flush()  # paper.id 확보
@@ -339,7 +351,7 @@ async def run_discovery_cycle(
                 )
 
                 # Phase E §4: 분류 폴더 매핑 — move semantics.
-                # 시스템 폴더 4종 중 기존 매핑이 있으면 DELETE 후 새로 INSERT.
+                # 시스템 폴더 5종 중 기존 매핑이 있으면 DELETE 후 새로 INSERT.
                 # 사용자 폴더는 건드리지 않는다.
                 system_folder_ids = list(handles.folder_ids.values())
                 db.query(FolderPaper).filter(

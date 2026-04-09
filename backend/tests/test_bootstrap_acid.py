@@ -24,10 +24,11 @@ def test_concurrent_collection_creation_idempotent(db_session, monkeypatch):
     cols = db_session.query(Collection).filter(Collection.name == "ACID_TEST").all()
     assert len(cols) == 1
 
-    # 시스템 폴더 4종 + parent 1 = 5개만 (parent_id 같은 부모 아래)
+    # 시스템 폴더 5종 + parent 1 = 6개만 (parent_id 같은 부모 아래)
+    # Phase F-1.2: "평가 실패" 폴더 추가로 4→5
     parents = db_session.query(Folder).filter(
         Folder.name == "ACID_TEST", Folder.parent_id.is_(None)
     ).all()
     assert len(parents) == 1
     children = db_session.query(Folder).filter(Folder.parent_id == parents[0].id).all()
-    assert len(children) == 4
+    assert len(children) == 5

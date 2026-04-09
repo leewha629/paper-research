@@ -25,9 +25,10 @@ from models import Collection, Folder
 
 # (이름, 표시순서) — Discovery가 score를 이 4개 중 하나로 매핑
 SYSTEM_FOLDER_NAMES: List[str] = [
-    "풀분석 추천",   # 7~9
+    "풀분석 추천",   # 7~10
     "자동 발견",     # 5~6
     "검토 대기",     # 4
+    "평가 실패",     # LLM 평가 실패 (Phase F-1.2)
     "휴지통",        # 0~3
 ]
 
