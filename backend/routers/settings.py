@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from database import get_db
 from models import AppSetting
+from schemas import SettingsUpdate
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -39,11 +40,10 @@ async def get_settings(db: Session = Depends(get_db)):
 
 
 @router.put("")
-async def update_settings(body: dict, db: Session = Depends(get_db)):
-    for key in SETTING_KEYS:
-        if key not in body:
+async def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
+    for key, value in body.model_dump(exclude_unset=True).items():
+        if key not in SETTING_KEYS:
             continue
-        value = body[key]
 
         # If the value is masked (contains ***), skip updating
         if value and "***" in value:

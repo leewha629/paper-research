@@ -4,6 +4,7 @@ from typing import List, Optional
 
 from database import get_db
 from models import Folder, FolderPaper, Paper
+from schemas import FolderCreate, FolderUpdate, FolderPaperAdd, PaperMove
 
 router = APIRouter(prefix="/folders", tags=["folders"])
 
@@ -40,19 +41,14 @@ async def list_folders(db: Session = Depends(get_db)):
 
 
 @router.post("")
-async def create_folder(body: dict, db: Session = Depends(get_db)):
+async def create_folder(body: FolderCreate, db: Session = Depends(get_db)):
     """폴더 생성"""
-    name = body.get("name")
-    if not name:
-        raise HTTPException(status_code=400, detail="폴더 이름이 필요합니다.")
-
-    parent_id = body.get("parent_id")
-    if parent_id is not None:
-        parent = db.query(Folder).filter(Folder.id == parent_id).first()
+    if body.parent_id is not None:
+        parent = db.query(Folder).filter(Folder.id == body.parent_id).first()
         if not parent:
             raise HTTPException(status_code=404, detail="부모 폴더를 찾을 수 없습니다.")
 
-    folder = Folder(name=name, parent_id=parent_id)
+    folder = Folder(name=body.name, parent_id=body.parent_id)
     db.add(folder)
     db.commit()
     db.refresh(folder)
@@ -67,17 +63,17 @@ async def create_folder(body: dict, db: Session = Depends(get_db)):
 
 
 @router.put("/{id}")
-async def update_folder(id: int, body: dict, db: Session = Depends(get_db)):
+async def update_folder(id: int, body: FolderUpdate, db: Session = Depends(get_db)):
     """폴더 이름 또는 부모 변경"""
     folder = db.query(Folder).filter(Folder.id == id).first()
     if not folder:
         raise HTTPException(status_code=404, detail="폴더를 찾을 수 없습니다.")
 
-    if "name" in body and body["name"]:
-        folder.name = body["name"]
+    if "name" in body.model_fields_set and body.name:
+        folder.name = body.name
 
-    if "parent_id" in body:
-        new_parent_id = body["parent_id"]
+    if "parent_id" in body.model_fields_set:
+        new_parent_id = body.parent_id
         # 자기 자신을 부모로 설정 방지
         if new_parent_id == id:
             raise HTTPException(status_code=400, detail="폴더를 자기 자신의 하위로 이동할 수 없습니다.")
@@ -95,7 +91,7 @@ async def update_folder(id: int, body: dict, db: Session = Depends(get_db)):
                 if check_folder.parent_id == id:
                     raise HTTPException(status_code=400, detail="순환 참조가 발생합니다.")
                 check_id = check_folder.parent_id
-        folder.parent_id = new_parent_id
+        folder.parent_id = new_parent_id  # type: ignore[assignment]
 
     db.commit()
     db.refresh(folder)
@@ -114,7 +110,7 @@ async def delete_folder(id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{id}/papers")
-async def add_paper_to_folder(id: int, body: dict, db: Session = Depends(get_db)):
+async def add_paper_to_folder(id: int, body: FolderPaperAdd, db: Session = Depends(get_db)):
     """폴더에 논문 추가 (move semantics).
 
     DB 레벨에 UNIQUE(paper_id) 인덱스(uq_folder_papers_paper)가 걸려 있으므로
@@ -125,10 +121,7 @@ async def add_paper_to_folder(id: int, body: dict, db: Session = Depends(get_db)
     if not folder:
         raise HTTPException(status_code=404, detail="폴더를 찾을 수 없습니다.")
 
-    paper_id = body.get("paper_id")
-    if not paper_id:
-        raise HTTPException(status_code=400, detail="paper_id가 필요합니다.")
-
+    paper_id = body.paper_id
     paper = db.query(Paper).filter(Paper.id == paper_id).first()
     if not paper:
         raise HTTPException(status_code=404, detail="논문을 찾을 수 없습니다.")
@@ -192,17 +185,14 @@ async def list_papers_in_folder(id: int, db: Session = Depends(get_db)):
 
 
 @router.put("/{id}/move")
-async def move_paper_between_folders(id: int, body: dict, db: Session = Depends(get_db)):
+async def move_paper_between_folders(id: int, body: PaperMove, db: Session = Depends(get_db)):
     """논문을 다른 폴더로 이동 (move semantics).
 
     UNIQUE(paper_id) 제약을 유지하기 위해 paper_id 에 대한 모든 기존 매핑을
     제거한 뒤 target 폴더에 새로 INSERT 한다. source==target 인 경우 no-op.
     """
-    paper_id = body.get("paper_id")
-    target_folder_id = body.get("target_folder_id")
-
-    if not paper_id or target_folder_id is None:
-        raise HTTPException(status_code=400, detail="paper_id와 target_folder_id가 필요합니다.")
+    paper_id = body.paper_id
+    target_folder_id = body.target_folder_id
 
     # 원본 폴더 유효성 (사용자 에러 메시지 유지)
     fp = db.query(FolderPaper).filter(

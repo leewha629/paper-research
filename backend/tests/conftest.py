@@ -26,14 +26,17 @@ if str(BACKEND_DIR) not in sys.path:
 # 실제 data/papers.db를 건드리지 않기 위해 in-memory SQLite 엔진을 별도로 만든다.
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 import database  # noqa: E402  (sys.path 셋업 후 import)
 from database import Base  # noqa: E402
 import models  # noqa: F401,E402  (모든 테이블이 Base.metadata에 등록되어야 함)
 
+# StaticPool: in-memory SQLite에서 create_all / 세션이 항상 동일 연결을 사용하도록 보장.
 _TEST_ENGINE = create_engine(
     "sqlite:///:memory:",
     connect_args={"check_same_thread": False},
+    poolclass=StaticPool,
 )
 _TestSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_TEST_ENGINE)
 

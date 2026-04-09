@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from database import get_db
 from models import Subscription, Alert, AppSetting
 from s2_client import S2Client
+from schemas import SubscriptionCreate
 from services.llm.exceptions import (
     LLMError,
     LLMTimeoutError,
@@ -65,21 +66,12 @@ async def list_subscriptions(db: Session = Depends(get_db)):
 
 
 @router.post("/subscriptions")
-async def create_subscription(body: dict, db: Session = Depends(get_db)):
+async def create_subscription(body: SubscriptionCreate, db: Session = Depends(get_db)):
     """구독 생성"""
-    sub_type = body.get("sub_type")
-    query = body.get("query")
-
-    if not sub_type or not query:
-        raise HTTPException(status_code=400, detail="sub_type과 query가 필요합니다.")
-
-    if sub_type not in ("keyword", "author", "citation"):
-        raise HTTPException(status_code=400, detail="sub_type은 keyword, author, citation 중 하나여야 합니다.")
-
     sub = Subscription(
-        sub_type=sub_type,
-        query=query,
-        label=body.get("label"),
+        sub_type=body.sub_type,
+        query=body.query,
+        label=body.label,
     )
     db.add(sub)
     db.commit()

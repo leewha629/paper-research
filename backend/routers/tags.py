@@ -4,6 +4,7 @@ from typing import List
 
 from database import get_db
 from models import Tag, PaperTag, Paper
+from schemas import TagCreate, TagUpdate, PaperTagAdd
 
 router = APIRouter(prefix="/tags", tags=["tags"])
 
@@ -26,17 +27,13 @@ async def list_tags(db: Session = Depends(get_db)):
 
 
 @router.post("")
-async def create_tag(body: dict, db: Session = Depends(get_db)):
+async def create_tag(body: TagCreate, db: Session = Depends(get_db)):
     """태그 생성"""
-    name = body.get("name")
-    if not name:
-        raise HTTPException(status_code=400, detail="태그 이름이 필요합니다.")
-
-    existing = db.query(Tag).filter(Tag.name == name).first()
+    existing = db.query(Tag).filter(Tag.name == body.name).first()
     if existing:
         raise HTTPException(status_code=400, detail="같은 이름의 태그가 이미 존재합니다.")
 
-    tag = Tag(name=name, color=body.get("color", "#6c63ff"))
+    tag = Tag(name=body.name, color=body.color)
     db.add(tag)
     db.commit()
     db.refresh(tag)
@@ -50,20 +47,20 @@ async def create_tag(body: dict, db: Session = Depends(get_db)):
 
 
 @router.put("/{id}")
-async def update_tag(id: int, body: dict, db: Session = Depends(get_db)):
+async def update_tag(id: int, body: TagUpdate, db: Session = Depends(get_db)):
     """태그 수정"""
     tag = db.query(Tag).filter(Tag.id == id).first()
     if not tag:
         raise HTTPException(status_code=404, detail="태그를 찾을 수 없습니다.")
 
-    if "name" in body and body["name"]:
+    if "name" in body.model_fields_set and body.name:
         # 중복 이름 확인
-        dup = db.query(Tag).filter(Tag.name == body["name"], Tag.id != id).first()
+        dup = db.query(Tag).filter(Tag.name == body.name, Tag.id != id).first()
         if dup:
             raise HTTPException(status_code=400, detail="같은 이름의 태그가 이미 존재합니다.")
-        tag.name = body["name"]
-    if "color" in body:
-        tag.color = body["color"]
+        tag.name = body.name
+    if "color" in body.model_fields_set:
+        tag.color = body.color
 
     db.commit()
     db.refresh(tag)
@@ -89,16 +86,13 @@ async def delete_tag(id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{id}/papers")
-async def add_paper_to_tag(id: int, body: dict, db: Session = Depends(get_db)):
+async def add_paper_to_tag(id: int, body: PaperTagAdd, db: Session = Depends(get_db)):
     """태그에 논문 추가"""
     tag = db.query(Tag).filter(Tag.id == id).first()
     if not tag:
         raise HTTPException(status_code=404, detail="태그를 찾을 수 없습니다.")
 
-    paper_id = body.get("paper_id")
-    if not paper_id:
-        raise HTTPException(status_code=400, detail="paper_id가 필요합니다.")
-
+    paper_id = body.paper_id
     paper = db.query(Paper).filter(Paper.id == paper_id).first()
     if not paper:
         raise HTTPException(status_code=404, detail="논문을 찾을 수 없습니다.")

@@ -48,10 +48,11 @@ async def test_analyze_paper_structured_parses_markdown_fence_response(
     mock_ai.queue_text(fenced_response)
 
     from routers.ai import analyze_paper
+    from schemas import AnalyzeRequest
 
     result = await analyze_paper(
         paper_id=paper.id,
-        body={"analysis_type": "structured"},
+        body=AnalyzeRequest(analysis_type="structured"),
         db=db_session,
     )
 

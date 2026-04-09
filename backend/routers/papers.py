@@ -11,6 +11,7 @@ from schemas import (
     PaperCreate, PaperUpdate, PaperOut,
     CollectionCreate, CollectionUpdate, CollectionOut,
     AIAnalysisResultOut,
+    CollectionPaperAdd, BulkStatusUpdate, BulkDeleteRequest,
 )
 
 router = APIRouter(tags=["papers"])
@@ -309,15 +310,12 @@ async def delete_collection(id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/collections/{id}/papers")
-async def add_paper_to_collection(id: int, body: dict, db: Session = Depends(get_db)):
+async def add_paper_to_collection(id: int, body: CollectionPaperAdd, db: Session = Depends(get_db)):
     col = db.query(Collection).filter(Collection.id == id).first()
     if not col:
         raise HTTPException(status_code=404, detail="컬렉션을 찾을 수 없습니다.")
 
-    paper_id = body.get("paper_id")
-    if not paper_id:
-        raise HTTPException(status_code=400, detail="paper_id가 필요합니다.")
-
+    paper_id = body.paper_id
     paper = db.query(Paper).filter(Paper.id == paper_id).first()
     if not paper:
         raise HTTPException(status_code=404, detail="논문을 찾을 수 없습니다.")
@@ -351,35 +349,25 @@ async def remove_paper_from_collection(id: int, paper_id: int, db: Session = Dep
 # --- Bulk Operations ---
 
 @router.post("/papers/bulk-status")
-async def bulk_update_status(body: dict, db: Session = Depends(get_db)):
+async def bulk_update_status(body: BulkStatusUpdate, db: Session = Depends(get_db)):
     """여러 논문의 상태를 일괄 변경"""
-    paper_ids = body.get("paper_ids", [])
-    status = body.get("status")
-
-    if not paper_ids:
+    if not body.paper_ids:
         raise HTTPException(status_code=400, detail="paper_ids가 필요합니다.")
-    if not status:
-        raise HTTPException(status_code=400, detail="status가 필요합니다.")
 
-    valid_statuses = ("unread", "reading", "read", "important")
-    if status not in valid_statuses:
-        raise HTTPException(status_code=400, detail=f"status는 {', '.join(valid_statuses)} 중 하나여야 합니다.")
-
-    updated = db.query(Paper).filter(Paper.id.in_(paper_ids)).update(
-        {"status": status}, synchronize_session="fetch"
+    updated = db.query(Paper).filter(Paper.id.in_(body.paper_ids)).update(
+        {"status": body.status}, synchronize_session="fetch"
     )
     db.commit()
     return {"success": True, "updated": updated}
 
 
 @router.post("/papers/bulk-delete")
-async def bulk_delete_papers(body: dict, db: Session = Depends(get_db)):
+async def bulk_delete_papers(body: BulkDeleteRequest, db: Session = Depends(get_db)):
     """여러 논문을 일괄 삭제"""
-    paper_ids = body.get("paper_ids", [])
-
-    if not paper_ids:
+    if not body.paper_ids:
         raise HTTPException(status_code=400, detail="paper_ids가 필요합니다.")
 
+    paper_ids = body.paper_ids
     # 관련 데이터 삭제
     db.query(PaperCollection).filter(PaperCollection.paper_id.in_(paper_ids)).delete(synchronize_session="fetch")
     db.query(PaperTag).filter(PaperTag.paper_id.in_(paper_ids)).delete(synchronize_session="fetch")

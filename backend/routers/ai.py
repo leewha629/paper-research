@@ -9,6 +9,10 @@ from typing import Optional, List
 from database import get_db
 from models import Paper, AIAnalysisResult, BatchJob, PromptTemplate
 from services.llm.router import parse_json_response, test_connection as llm_test_connection
+from schemas import (
+    AnalyzeRequest, BatchAnalyzeRequest, TrendAnalysisRequest, ReviewDraftRequest,
+    PromptTemplateCreate, PromptTemplateUpdate,
+)
 
 router = APIRouter(prefix="/ai", tags=["ai"])
 
@@ -302,15 +306,10 @@ def _serialize_analysis(a: AIAnalysisResult) -> dict:
 @router.post("/analyze/{paper_id}")
 async def analyze_paper(
     paper_id: int,
-    body: dict,
+    body: AnalyzeRequest,
     db: Session = Depends(get_db),
 ):
-    analysis_type = body.get("analysis_type")
-    if not analysis_type or analysis_type not in ANALYSIS_TYPES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"유효하지 않은 분석 유형입니다. 가능한 유형: {', '.join(ANALYSIS_TYPES)}",
-        )
+    analysis_type = body.analysis_type
 
     paper = db.query(Paper).filter(Paper.id == paper_id).first()
     if not paper:
@@ -463,9 +462,9 @@ async def analyze_all(paper_id: int, db: Session = Depends(get_db)):
 # ---------------------------------------------------------------------------
 
 @router.post("/batch-analyze")
-async def batch_analyze(body: dict, db: Session = Depends(get_db)):
-    paper_ids: list = body.get("paper_ids", [])
-    analysis_types: list = body.get("analysis_types", ["summary"])
+async def batch_analyze(body: BatchAnalyzeRequest, db: Session = Depends(get_db)):
+    paper_ids: list = body.paper_ids
+    analysis_types: list = body.analysis_types
 
     if not paper_ids:
         raise HTTPException(status_code=400, detail="paper_ids가 비어 있습니다.")
@@ -597,8 +596,8 @@ async def batch_analyze(body: dict, db: Session = Depends(get_db)):
 # ---------------------------------------------------------------------------
 
 @router.post("/trend-analyze")
-async def trend_analyze(body: dict, db: Session = Depends(get_db)):
-    paper_ids: list = body.get("paper_ids", [])
+async def trend_analyze(body: TrendAnalysisRequest, db: Session = Depends(get_db)):
+    paper_ids: list = body.paper_ids
     if not paper_ids:
         raise HTTPException(status_code=400, detail="paper_ids가 비어 있습니다.")
 
@@ -656,8 +655,8 @@ async def trend_analyze(body: dict, db: Session = Depends(get_db)):
 # ---------------------------------------------------------------------------
 
 @router.post("/review-draft")
-async def review_draft(body: dict, db: Session = Depends(get_db)):
-    paper_ids: list = body.get("paper_ids", [])
+async def review_draft(body: ReviewDraftRequest, db: Session = Depends(get_db)):
+    paper_ids: list = body.paper_ids
     if not paper_ids:
         raise HTTPException(status_code=400, detail="paper_ids가 비어 있습니다.")
 
@@ -815,24 +814,16 @@ async def get_prompt(name: str, db: Session = Depends(get_db)):
 
 
 @router.post("/prompts")
-async def create_prompt(body: dict, db: Session = Depends(get_db)):
-    name = body.get("name")
-    label = body.get("label", name)
-    category = body.get("category", "analysis")
-    system_prompt = body.get("system_prompt")
-
-    if not name or not system_prompt:
-        raise HTTPException(status_code=400, detail="name과 system_prompt는 필수입니다.")
-
-    existing = db.query(PromptTemplate).filter(PromptTemplate.name == name).first()
+async def create_prompt(body: PromptTemplateCreate, db: Session = Depends(get_db)):
+    existing = db.query(PromptTemplate).filter(PromptTemplate.name == body.name).first()
     if existing:
-        raise HTTPException(status_code=409, detail=f"프롬프트 '{name}'이 이미 존재합니다.")
+        raise HTTPException(status_code=409, detail=f"프롬프트 '{body.name}'이 이미 존재합니다.")
 
     pt = PromptTemplate(
-        name=name,
-        label=label,
-        category=category,
-        system_prompt=system_prompt,
+        name=body.name,
+        label=body.label or body.name,
+        category=body.category,
+        system_prompt=body.system_prompt,
         is_default=False,
     )
     db.add(pt)
@@ -850,17 +841,17 @@ async def create_prompt(body: dict, db: Session = Depends(get_db)):
 
 
 @router.put("/prompts/{name}")
-async def update_prompt(name: str, body: dict, db: Session = Depends(get_db)):
+async def update_prompt(name: str, body: PromptTemplateUpdate, db: Session = Depends(get_db)):
     pt = db.query(PromptTemplate).filter(PromptTemplate.name == name).first()
     if not pt:
         raise HTTPException(status_code=404, detail=f"프롬프트 '{name}'을 찾을 수 없습니다.")
 
-    if "label" in body:
-        pt.label = body["label"]
-    if "category" in body:
-        pt.category = body["category"]
-    if "system_prompt" in body:
-        pt.system_prompt = body["system_prompt"]
+    if "label" in body.model_fields_set:
+        pt.label = body.label
+    if "category" in body.model_fields_set:
+        pt.category = body.category
+    if "system_prompt" in body.model_fields_set:
+        pt.system_prompt = body.system_prompt
 
     pt.is_default = False  # 수정하면 커스텀으로 전환
     pt.updated_at = datetime.now(timezone.utc)

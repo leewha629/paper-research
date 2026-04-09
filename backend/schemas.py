@@ -1,5 +1,5 @@
-from pydantic import BaseModel
-from typing import Optional, List, Any
+from pydantic import BaseModel, Field, ConfigDict
+from typing import Optional, List, Any, Literal
 from datetime import datetime
 
 
@@ -30,33 +30,45 @@ class PaperUpdate(BaseModel):
     user_notes: Optional[str] = None
 
 
+class BulkStatusUpdate(BaseModel):
+    paper_ids: List[int]
+    status: Literal["unread", "reading", "read", "important"]
+
+
+class BulkDeleteRequest(BaseModel):
+    paper_ids: List[int]
+
+
+class CollectionPaperAdd(BaseModel):
+    paper_id: int
+
+
 class CollectionInfo(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     name: str
     color: str
-
-    class Config:
-        from_attributes = True
 
 
 class TagInfo(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     name: str
     color: str
 
-    class Config:
-        from_attributes = True
-
 
 class FolderInfo(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     name: str
 
-    class Config:
-        from_attributes = True
-
 
 class AIAnalysisResultOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     paper_id: int
     analysis_type: str
@@ -66,11 +78,10 @@ class AIAnalysisResultOut(BaseModel):
     model_name: str
     created_at: datetime
 
-    class Config:
-        from_attributes = True
-
 
 class PaperOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     paper_id: str
     title: str
@@ -95,9 +106,6 @@ class PaperOut(BaseModel):
     folders: List[FolderInfo] = []
     analyses: List[AIAnalysisResultOut] = []
 
-    class Config:
-        from_attributes = True
-
 
 # --- Collection ---
 
@@ -118,6 +126,8 @@ class CollectionUpdate(BaseModel):
 
 
 class CollectionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     name: str
     description: Optional[str] = None
@@ -125,46 +135,57 @@ class CollectionOut(BaseModel):
     created_at: datetime
     paper_count: int = 0
 
-    class Config:
-        from_attributes = True
-
 
 # --- Tag ---
 
 class TagCreate(BaseModel):
-    name: str
+    name: str = Field(min_length=1, max_length=50)
     color: str = "#6c63ff"
 
 
 class TagUpdate(BaseModel):
-    name: Optional[str] = None
+    name: Optional[str] = Field(None, min_length=1, max_length=50)
     color: Optional[str] = None
 
 
+class PaperTagAdd(BaseModel):
+    paper_id: int
+
+
 class TagOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     name: str
     color: str
     created_at: datetime
     paper_count: int = 0
 
-    class Config:
-        from_attributes = True
-
 
 # --- Folder ---
 
 class FolderCreate(BaseModel):
-    name: str
+    name: str = Field(min_length=1, max_length=200)
     parent_id: Optional[int] = None
 
 
 class FolderUpdate(BaseModel):
-    name: Optional[str] = None
+    name: Optional[str] = Field(None, min_length=1, max_length=200)
     parent_id: Optional[int] = None
 
 
+class FolderPaperAdd(BaseModel):
+    paper_id: int
+
+
+class PaperMove(BaseModel):
+    paper_id: int
+    target_folder_id: int
+
+
 class FolderOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     name: str
     parent_id: Optional[int] = None
@@ -172,11 +193,24 @@ class FolderOut(BaseModel):
     paper_count: int = 0
     children: List["FolderOut"] = []
 
-    class Config:
-        from_attributes = True
-
 
 # --- AI ---
+
+AnalysisTypeLiteral = Literal[
+    "synthesis_conditions",
+    "experiment_summary",
+    "summary",
+    "significance",
+    "keywords",
+    "structured",
+    "trend",
+    "review_draft",
+]
+
+
+class AnalyzeRequest(BaseModel):
+    analysis_type: AnalysisTypeLiteral
+
 
 class AIAnalyzeRequest(BaseModel):
     analysis_type: str
@@ -198,12 +232,14 @@ class TrendAnalysisRequest(BaseModel):
 # --- Subscription / Alert ---
 
 class SubscriptionCreate(BaseModel):
-    sub_type: str  # "keyword" / "author" / "citation"
-    query: str
+    sub_type: Literal["keyword", "author", "citation"]
+    query: str = Field(min_length=1)
     label: Optional[str] = None
 
 
 class SubscriptionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     sub_type: str
     query: str
@@ -213,11 +249,10 @@ class SubscriptionOut(BaseModel):
     created_at: datetime
     unread_count: int = 0
 
-    class Config:
-        from_attributes = True
-
 
 class AlertOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     subscription_id: int
     paper_id_s2: str
@@ -229,13 +264,12 @@ class AlertOut(BaseModel):
     is_read: bool
     created_at: datetime
 
-    class Config:
-        from_attributes = True
-
 
 # --- BatchJob ---
 
 class BatchJobOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     job_type: str
     status: str
@@ -247,25 +281,25 @@ class BatchJobOut(BaseModel):
     created_at: datetime
     completed_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
-
 
 # --- Prompt Template ---
 
 class PromptTemplateCreate(BaseModel):
     name: str
-    label: str
-    category: str
+    label: Optional[str] = None  # 미지정 시 라우터에서 name으로 대체
+    category: str = "analysis"
     system_prompt: str
 
 
 class PromptTemplateUpdate(BaseModel):
     label: Optional[str] = None
+    category: Optional[str] = None
     system_prompt: Optional[str] = None
 
 
 class PromptTemplateOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     name: str
     label: str
@@ -274,9 +308,6 @@ class PromptTemplateOut(BaseModel):
     is_default: bool
     created_at: datetime
     updated_at: datetime
-
-    class Config:
-        from_attributes = True
 
 
 # --- Filter Preset ---
@@ -292,24 +323,29 @@ class FilterPresetUpdate(BaseModel):
 
 
 class FilterPresetOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     name: str
     filters_json: str
     created_at: datetime
 
-    class Config:
-        from_attributes = True
-
 
 # --- Settings ---
 
-class SettingUpdate(BaseModel):
+class SettingsUpdate(BaseModel):
     ai_backend: Optional[str] = None
     claude_api_key: Optional[str] = None
     ollama_base_url: Optional[str] = None
     ollama_model: Optional[str] = None
     semantic_scholar_api_key: Optional[str] = None
     unpaywall_email: Optional[str] = None
+    check_interval: Optional[str] = None
+    relevance_threshold: Optional[str] = None
+
+
+# 하위 호환 alias (기존 코드에서 SettingUpdate로 참조 시)
+SettingUpdate = SettingsUpdate
 
 
 # --- Dashboard ---
