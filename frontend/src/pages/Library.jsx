@@ -1371,6 +1371,18 @@ export default function Library() {
                         <option value="reviewed">읽음</option>
                         <option value="important">중요</option>
                       </select>
+                      <select
+                        className="form-select"
+                        style={{ width: 110, padding: '2px 6px', fontSize: 11 }}
+                        value={paper.folder_id || ''}
+                        onChange={(e) => handleMove(paper, parseInt(e.target.value))}
+                        title="폴더 이동"
+                      >
+                        <option value="">📁 폴더</option>
+                        {folders.map((f) => (
+                          <option key={f.id} value={f.id}>{f.name}</option>
+                        ))}
+                      </select>
                     </div>
                   )
                 ))}
