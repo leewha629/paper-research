@@ -59,7 +59,7 @@ def ensure_eval_failed_folders(cur: sqlite3.Cursor) -> int:
             print(f"⏭  이미 존재: '{parent_name}' → '평가 실패'")
             continue
         cur.execute(
-            "INSERT INTO folders (name, parent_id, is_system_folder) VALUES ('평가 실패', ?, 1)",
+            "INSERT INTO folders (name, created_at, parent_id, is_system_folder) VALUES ('평가 실패', datetime('now'), ?, 1)",
             (parent_id,),
         )
         print(f"✅ 생성: '{parent_name}' → '평가 실패' (id={cur.lastrowid})")

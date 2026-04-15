@@ -17,7 +17,7 @@ def folder_to_tree(folder: Folder, db: Session) -> dict:
         "id": folder.id,
         "name": folder.name,
         "parent_id": folder.parent_id,
-        "created_at": folder.created_at.isoformat(),
+        "created_at": folder.created_at.isoformat() if folder.created_at else None,
         "paper_count": paper_count,
         "children": [folder_to_tree(child, db) for child in children],
     }
@@ -32,7 +32,7 @@ async def list_folders(db: Session = Depends(get_db)):
             "id": f.id,
             "name": f.name,
             "parent_id": f.parent_id,
-            "created_at": f.created_at.isoformat(),
+            "created_at": f.created_at.isoformat() if f.created_at else None,
             "paper_count": db.query(FolderPaper).filter(FolderPaper.folder_id == f.id).count(),
             "is_system_folder": bool(f.is_system_folder),
         }
@@ -56,7 +56,7 @@ async def create_folder(body: FolderCreate, db: Session = Depends(get_db)):
         "id": folder.id,
         "name": folder.name,
         "parent_id": folder.parent_id,
-        "created_at": folder.created_at.isoformat(),
+        "created_at": folder.created_at.isoformat() if folder.created_at else None,
         "paper_count": 0,
         "children": [],
     }
